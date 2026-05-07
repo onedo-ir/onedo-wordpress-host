@@ -63,6 +63,7 @@ touch "$STATE_FILE"
 # =========================
 
 FILE_DB="/database/filebrowser.db"
+touch $FILE_DB
 chown www-data:www-data $FILE_DB
 
 if [ ! -f "$FILE_DB" ]; then
