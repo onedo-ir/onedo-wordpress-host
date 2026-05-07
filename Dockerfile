@@ -44,10 +44,10 @@ RUN set -eux; \
     PHP_MINOR=$(php -r "echo PHP_MINOR_VERSION;"); \
     EXT_DIR=$(php -i | awk -F'=> ' '/extension_dir/ {print $2}' | head -n1 | tr -d ' '); \
     echo "PHP: ${PHP_MAJOR}.${PHP_MINOR} EXT: ${EXT_DIR}"; \
-    if [ -f "/ioncube/ioncube_loader_lin_${PHP_MAJOR}.${PHP_MINOR}_ts.so" ]; then \
-        IONCUBE="/ioncube/ioncube_loader_lin_${PHP_MAJOR}.${PHP_MINOR}_ts.so"; \
-    elif [ -f "/ioncube/ioncube_loader_lin_${PHP_MAJOR}.${PHP_MINOR}.so" ]; then \
+    if [ -f "/ioncube/ioncube_loader_lin_${PHP_MAJOR}.${PHP_MINOR}.so" ]; then \
         IONCUBE="/ioncube/ioncube_loader_lin_${PHP_MAJOR}.${PHP_MINOR}.so"; \
+    elif [ -f "/ioncube/ioncube_loader_lin_${PHP_MAJOR}.${PHP_MINOR}_ts.so" ]; then \
+        IONCUBE="/ioncube/ioncube_loader_lin_${PHP_MAJOR}.${PHP_MINOR}_ts.so"; \
     else \
         echo "❌ No matching ionCube loader found"; \
         ls /ioncube; \
