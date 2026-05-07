@@ -1,26 +1,101 @@
 #!/bin/bash
+set -e
+
+STATE_FILE="/var/lib/bootstrap.done"
+
+# =========================
+# FIRST RUN CHECK
+# =========================
+if [ -f "$STATE_FILE" ]; then
+    echo "[INIT] Already initialized. Skipping..."
+    exit 0
+fi
 
 sleep 10
 
-DB_NAME=wordpress
-DB_USER=wp_user_$(openssl rand -hex 3)
-DB_PASS=$(openssl rand -hex 12)
-DB_ROOT_PASS=$(openssl rand -hex 16)
+# =========================
+# USE ENV (DEFAULTS ONLY IF NOT PROVIDED)
+# =========================
+: "${DB_NAME:=wordpress}"
+: "${DB_USER:=wordpress}"
+: "${DB_PASS:=123456}"
+: "${DB_ROOT_PASS:=root123456}"
+: "${FILEBROWSER_USER:=admin}"
+: "${FILEBROWSER_PASS:=admin123@qwe}"
 
-service mysql start || true
-
+# =========================
+# MYSQL SETUP
+# =========================
 mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED BY '${DB_ROOT_PASS}';"
-mysql -uroot -p${DB_ROOT_PASS} -e "CREATE DATABASE ${DB_NAME};"
-mysql -uroot -p${DB_ROOT_PASS} -e "CREATE USER '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';"
-mysql -uroot -p${DB_ROOT_PASS} -e "GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO '${DB_USER}'@'localhost';"
+
+mysql -uroot -p${DB_ROOT_PASS} -e "CREATE DATABASE IF NOT EXISTS ${DB_NAME};"
+
+mysql -uroot -p${DB_ROOT_PASS} -e \
+"CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';"
+
+mysql -uroot -p${DB_ROOT_PASS} -e \
+"GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO '${DB_USER}'@'localhost';"
+
 mysql -uroot -p${DB_ROOT_PASS} -e "FLUSH PRIVILEGES;"
 
-cp /var/www/html/wp-config-sample.php /var/www/html/wp-config.php
+# =========================
+# WORDPRESS CONFIG
+# =========================
+if [ -f /var/www/html/wp-config-sample.php ]; then
+    cp /var/www/html/wp-config-sample.php /var/www/html/wp-config.php
 
-sed -i "s/database_name_here/${DB_NAME}/" /var/www/html/wp-config.php
-sed -i "s/username_here/${DB_USER}/" /var/www/html/wp-config.php
-sed -i "s/password_here/${DB_PASS}/" /var/www/html/wp-config.php
+    sed -i "s/database_name_here/${DB_NAME}/" /var/www/html/wp-config.php
+    sed -i "s/username_here/${DB_USER}/" /var/www/html/wp-config.php
+    sed -i "s/password_here/${DB_PASS}/" /var/www/html/wp-config.php
+fi
 
+rm -f /var/www/html/index.html || true
 chown -R www-data:www-data /var/www/html
 
-echo "DONE"
+# =========================
+# MARK INSTALL DONE
+# =========================
+mkdir -p /var/lib
+touch "$STATE_FILE"
+
+# =========================
+# FILEBROWSER INIT USER
+# =========================
+
+FILE_DB="/database/filebrowser.db"
+
+if [ ! -f "$FILE_DB" ]; then
+    mkdir -p /database
+
+    /usr/local/bin/filebrowser config init \
+        --database "$FILE_DB" \
+        --address 0.0.0.0 \
+        --port 8080
+
+    /usr/local/bin/filebrowser users add \
+        "${FILEBROWSER_USER}" \
+        "${FILEBROWSER_PASS}" \
+        --database "$FILE_DB" \
+        --perm.admin || true
+fi
+
+
+# =========================
+# OUTPUT (ONLY ON FIRST RUN)
+# =========================
+echo ""
+echo "======================================"
+echo " FIRST RUN SETUP COMPLETED"
+echo "======================================"
+echo "WordPress DB MariaDB"
+echo "DB_NAME      : ${DB_NAME}"
+echo "DB_USER      : ${DB_USER}"
+echo "DB_PASSWORD  : ${DB_PASS}"
+echo "DB_ROOT_PASS : ${DB_ROOT_PASS}"
+echo ""
+echo "FileBrowser"
+echo "URL      : http://localhost:8080"
+echo "USERNAME : ${FILEBROWSER_USER}"
+echo "PASSWORD : ${FILEBROWSER_PASS}"
+echo "======================================"
+echo ""

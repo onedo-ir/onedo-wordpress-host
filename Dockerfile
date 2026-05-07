@@ -24,7 +24,7 @@ RUN /filebrowser/get.sh
 COPY wordpress-6.9.4.tar.gz /tmp/latest.tar.gz
 RUN cd /tmp \
  && tar -xzf latest.tar.gz \
- && mv wordpress /var/www/html
+ && mv wordpress/* /var/www/html/
 
 # ===== Permissions =====
 RUN chown -R www-data:www-data /var/www/html
@@ -36,6 +36,27 @@ COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 COPY init.sh /init.sh
 RUN chmod +x /init.sh
 
+# ===== IonCube Loader =====
+COPY ioncube /ioncube
+
+RUN set -eux; \
+    PHP_MAJOR=$(php -r "echo PHP_MAJOR_VERSION;"); \
+    PHP_MINOR=$(php -r "echo PHP_MINOR_VERSION;"); \
+    EXT_DIR=$(php -i | awk -F'=> ' '/extension_dir/ {print $2}' | head -n1 | tr -d ' '); \
+    echo "PHP: ${PHP_MAJOR}.${PHP_MINOR} EXT: ${EXT_DIR}"; \
+    if [ -f "/ioncube/ioncube_loader_lin_${PHP_MAJOR}.${PHP_MINOR}_ts.so" ]; then \
+        IONCUBE="/ioncube/ioncube_loader_lin_${PHP_MAJOR}.${PHP_MINOR}_ts.so"; \
+    elif [ -f "/ioncube/ioncube_loader_lin_${PHP_MAJOR}.${PHP_MINOR}.so" ]; then \
+        IONCUBE="/ioncube/ioncube_loader_lin_${PHP_MAJOR}.${PHP_MINOR}.so"; \
+    else \
+        echo "❌ No matching ionCube loader found"; \
+        ls /ioncube; \
+        exit 1; \
+    fi; \
+    cp "$IONCUBE" "$EXT_DIR/"; \
+    echo "zend_extension=$EXT_DIR/$(basename $IONCUBE)" > /etc/php/${PHP_MAJOR}.${PHP_MINOR}/apache2/conf.d/00-ioncube.ini; \
+    echo "zend_extension=$EXT_DIR/$(basename $IONCUBE)" > /etc/php/${PHP_MAJOR}.${PHP_MINOR}/cli/conf.d/00-ioncube.ini
+        
 EXPOSE 80 8080 3306
 
 CMD ["/usr/bin/supervisord", "-n"]
