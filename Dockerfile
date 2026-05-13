@@ -56,7 +56,12 @@ RUN set -eux; \
     cp "$IONCUBE" "$EXT_DIR/"; \
     echo "zend_extension=$EXT_DIR/$(basename $IONCUBE)" > /etc/php/${PHP_MAJOR}.${PHP_MINOR}/apache2/conf.d/00-ioncube.ini; \
     echo "zend_extension=$EXT_DIR/$(basename $IONCUBE)" > /etc/php/${PHP_MAJOR}.${PHP_MINOR}/cli/conf.d/00-ioncube.ini
-        
+
+
+RUN curl -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar \
+ && chmod +x wp-cli.phar  \
+ && mv wp-cli.phar /usr/local/bin/wp
+
 EXPOSE 80 8080 3306
 
 CMD ["/usr/bin/supervisord", "-n"]
