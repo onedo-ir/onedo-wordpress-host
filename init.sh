@@ -63,8 +63,7 @@ touch "$STATE_FILE"
 # =========================
 
 FILE_DB="/database/filebrowser.db"
-touch $FILE_DB
-chown www-data:www-data $FILE_DB
+mkdir /database -p
 
 if [ ! -f "$FILE_DB" ]; then
     mkdir -p /database
@@ -80,6 +79,7 @@ if [ ! -f "$FILE_DB" ]; then
         --database "$FILE_DB" \
         --perm.admin || true
 fi
+chown -R www-data:www-data /database
 
 
 # =========================
