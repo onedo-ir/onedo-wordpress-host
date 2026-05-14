@@ -1,11 +1,16 @@
 #!/bin/bash
 
 # Website name
-SITE_NAME="${1:-mywebsite}"
+SITE_NAME="${1:-auroralife}"
 
 # Generate random passwords
-RAND_PASS=$(openssl rand -base64 18 | tr -dc 'A-Za-z0-9' | head -c 24)
-RAND_PASS_DB=$(openssl rand -base64 18 | tr -dc 'A-Za-z0-9' | head -c 24)
+FILEBROWSER_PASS=$(openssl rand -base64 18 | tr -dc 'A-Za-z0-9' | head -c 24)
+DB_PASS=$(openssl rand -base64 18 | tr -dc 'A-Za-z0-9' | head -c 24)
+
+# Generate random ports
+PORT_HTTP=$(shuf -i 20000-40000 -n 1)
+PORT_FILEBROWSER=$(shuf -i 40001-50000 -n 1)
+PORT_DB=$(shuf -i 50001-60000 -n 1)
 
 # Output file
 COMPOSE_FILE="docker-compose.yml"
@@ -17,15 +22,16 @@ services:
     container_name: ${SITE_NAME}
     build: .
     ports:
-      - "8725:80"
-      - "8726:8080"
+      - "${PORT_HTTP}:80"
+      - "${PORT_FILEBROWSER}:8080"
+      - "${PORT_DB}:3306"
     environment:
       FILEBROWSER_USER: admin
-      FILEBROWSER_PASS: ${RAND_PASS}
+      FILEBROWSER_PASS: ${FILEBROWSER_PASS}
       DB_NAME: ${SITE_NAME}_db
       DB_USER: ${SITE_NAME}_usr
-      DB_PASS: ${RAND_PASS_DB}
-      DB_ROOT_PASS: ${RAND_PASS_DB}
+      DB_PASS: ${DB_PASS}
+      DB_ROOT_PASS: ${DB_PASS}
     volumes:
       - wp_html:/var/www/html
       - wp_db:/var/lib/mysql
@@ -42,6 +48,10 @@ EOF
 
 echo "docker-compose.yml generated successfully!"
 echo
-echo "Website Name : ${SITE_NAME}"
-echo "FileBrowser Password : ${RAND_PASS}"
-echo "Database Password    : ${RAND_PASS_DB}"
+echo "Website Name        : ${SITE_NAME}"
+echo "WordPress Port      : ${PORT_HTTP}"
+echo "FileBrowser Port    : ${PORT_FILEBROWSER}"
+echo "MariaDB Port        : ${PORT_DB}"
+echo "FileBrowser User    : admin"
+echo "FileBrowser Password: ${FILEBROWSER_PASS}"
+echo "Database Password   : ${DB_PASS}"
