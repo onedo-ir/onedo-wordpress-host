@@ -1,0 +1,1 @@
+bash <(curl -fsSL https://gitea.tmayt.ir/thaiostream/wp/raw/branch/main/install.sh) mysite
