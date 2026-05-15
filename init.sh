@@ -81,6 +81,33 @@ if [ ! -f "$FILE_DB" ]; then
 fi
 chown -R www-data:www-data /database
 
+# =========================
+# PHPMYADMIN CONFIG
+# =========================
+PMA_CONFIG="/usr/share/phpmyadmin/config.inc.php"
+PMA_TMP="/var/lib/phpmyadmin/tmp"
+mkdir -p "$PMA_TMP"
+chown -R www-data:www-data /var/lib/phpmyadmin
+
+BLOWFISH=$(openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | head -c 32)
+
+cat > "$PMA_CONFIG" <<EOF
+<?php
+declare(strict_types=1);
+
+\$cfg['blowfish_secret'] = '${BLOWFISH}';
+\$cfg['TempDir'] = '${PMA_TMP}';
+
+\$i = 0;
+\$i++;
+\$cfg['Servers'][\$i]['auth_type'] = 'cookie';
+\$cfg['Servers'][\$i]['host'] = 'localhost';
+\$cfg['Servers'][\$i]['compress'] = false;
+\$cfg['Servers'][\$i]['AllowNoPassword'] = false;
+EOF
+
+chown www-data:www-data "$PMA_CONFIG"
+chmod 640 "$PMA_CONFIG"
 
 # =========================
 # OUTPUT (ONLY ON FIRST RUN)
@@ -99,5 +126,9 @@ echo "FileBrowser"
 echo "URL      : http://localhost:8080"
 echo "USERNAME : ${FILEBROWSER_USER}"
 echo "PASSWORD : ${FILEBROWSER_PASS}"
+echo ""
+echo "phpMyAdmin"
+echo "URL      : http://localhost/phpmyadmin"
+echo "LOGIN    : use DB_USER/DB_PASS or root / DB_ROOT_PASS"
 echo "======================================"
 echo ""

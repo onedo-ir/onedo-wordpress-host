@@ -11,9 +11,16 @@ RUN echo "deb http://mirror.arvancloud.ir/ubuntu/ jammy main restricted universe
 # ===== Install all services =====
 RUN apt-get update && apt-get install -y \
     apache2 mariadb-server \
-    php php-mysql php-cli php-curl php-xml php-mbstring libapache2-mod-php \
+    php php-mysql php-cli php-curl php-xml php-mbstring php-zip php-gd libapache2-mod-php \
     wget curl unzip tar openssl supervisor \
     && rm -rf /var/lib/apt/lists/*
+
+# ===== Install phpMyAdmin =====
+COPY phpmyadmin /phpmyadmin
+RUN chmod +x /phpmyadmin/get.sh \
+ && /phpmyadmin/get.sh \
+ && cp /phpmyadmin/apache-phpmyadmin.conf /etc/apache2/conf-available/phpmyadmin.conf \
+ && a2enconf phpmyadmin
 
 # ===== Install FileBrowser =====
 COPY filebrowser /filebrowser
