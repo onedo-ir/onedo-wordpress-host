@@ -12,7 +12,7 @@ RUN echo "deb http://mirror.arvancloud.ir/ubuntu/ jammy main restricted universe
 RUN apt-get update && apt-get install -y \
     apache2 mariadb-server \
     php php-mysql php-cli php-curl php-xml php-mbstring php-zip php-gd libapache2-mod-php \
-    wget curl unzip tar openssl supervisor \
+    wget curl unzip tar openssl supervisor nano \
     && rm -rf /var/lib/apt/lists/*
 
 # ===== Install phpMyAdmin =====
