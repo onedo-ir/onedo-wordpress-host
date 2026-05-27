@@ -15,6 +15,24 @@ RUN apt-get update && apt-get install -y \
     wget curl unzip tar openssl supervisor nano \
     && rm -rf /var/lib/apt/lists/*
 
+# ===== Apache VirtualHost (echo method) =====
+RUN echo '<VirtualHost *:80>' > /etc/apache2/sites-available/000-default.conf && \
+    echo '    ServerAdmin webmaster@localhost' >> /etc/apache2/sites-available/000-default.conf && \
+    echo '    DocumentRoot /var/www/html' >> /etc/apache2/sites-available/000-default.conf && \
+    echo '' >> /etc/apache2/sites-available/000-default.conf && \
+    echo '    ErrorLog ${APACHE_LOG_DIR}/error.log' >> /etc/apache2/sites-available/000-default.conf && \
+    echo '    CustomLog ${APACHE_LOG_DIR}/access.log combined' >> /etc/apache2/sites-available/000-default.conf && \
+    echo '' >> /etc/apache2/sites-available/000-default.conf && \
+    echo '    <Directory /var/www/html>' >> /etc/apache2/sites-available/000-default.conf && \
+    echo '        AllowOverride All' >> /etc/apache2/sites-available/000-default.conf && \
+    echo '        Require all granted' >> /etc/apache2/sites-available/000-default.conf && \
+    echo '    </Directory>' >> /etc/apache2/sites-available/000-default.conf && \
+    echo '</VirtualHost>' >> /etc/apache2/sites-available/000-default.conf
+
+# ===== Enable Apache modules =====
+RUN a2enmod rewrite \
+ && a2ensite 000-default.conf
+
 # ===== Install phpMyAdmin =====
 COPY phpmyadmin /phpmyadmin
 RUN chmod +x /phpmyadmin/get.sh \
@@ -24,8 +42,8 @@ RUN chmod +x /phpmyadmin/get.sh \
 
 # ===== Install FileBrowser =====
 COPY filebrowser /filebrowser
-RUN chmod +x /filebrowser/get.sh
-RUN /filebrowser/get.sh
+RUN chmod +x /filebrowser/get.sh \
+ && /filebrowser/get.sh
 
 # ===== WordPress =====
 COPY wordpress-6.9.4.tar.gz /tmp/latest.tar.gz
@@ -64,9 +82,9 @@ RUN set -eux; \
     echo "zend_extension=$EXT_DIR/$(basename $IONCUBE)" > /etc/php/${PHP_MAJOR}.${PHP_MINOR}/apache2/conf.d/00-ioncube.ini; \
     echo "zend_extension=$EXT_DIR/$(basename $IONCUBE)" > /etc/php/${PHP_MAJOR}.${PHP_MINOR}/cli/conf.d/00-ioncube.ini
 
-
+# ===== WP-CLI =====
 RUN curl -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar \
- && chmod +x wp-cli.phar  \
+ && chmod +x wp-cli.phar \
  && mv wp-cli.phar /usr/local/bin/wp
 
 EXPOSE 80 8080 3306
