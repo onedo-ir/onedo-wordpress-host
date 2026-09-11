@@ -15,22 +15,10 @@ RUN apt-get update && apt-get install -y \
     wget curl unzip tar openssl supervisor nano \
     && rm -rf /var/lib/apt/lists/*
 
-# ===== Apache VirtualHost (echo method) =====
-RUN echo '<VirtualHost *:80>' > /etc/apache2/sites-available/000-default.conf && \
-    echo '    ServerAdmin webmaster@localhost' >> /etc/apache2/sites-available/000-default.conf && \
-    echo '    DocumentRoot /var/www/html' >> /etc/apache2/sites-available/000-default.conf && \
-    echo '' >> /etc/apache2/sites-available/000-default.conf && \
-    echo '    ErrorLog ${APACHE_LOG_DIR}/error.log' >> /etc/apache2/sites-available/000-default.conf && \
-    echo '    CustomLog ${APACHE_LOG_DIR}/access.log combined' >> /etc/apache2/sites-available/000-default.conf && \
-    echo '' >> /etc/apache2/sites-available/000-default.conf && \
-    echo '    <Directory /var/www/html>' >> /etc/apache2/sites-available/000-default.conf && \
-    echo '        AllowOverride All' >> /etc/apache2/sites-available/000-default.conf && \
-    echo '        Require all granted' >> /etc/apache2/sites-available/000-default.conf && \
-    echo '    </Directory>' >> /etc/apache2/sites-available/000-default.conf && \
-    echo '</VirtualHost>' >> /etc/apache2/sites-available/000-default.conf
-
-# ===== Enable Apache modules =====
-RUN a2enmod rewrite \
+# ===== Apache VirtualHost (pretty permalinks) =====
+COPY apache/000-default.conf /etc/apache2/sites-available/000-default.conf
+RUN sed -i '/<Directory \/var\/www\/>/,/<\/Directory>/ s/AllowOverride None/AllowOverride All/' /etc/apache2/apache2.conf \
+ && a2enmod rewrite \
  && a2ensite 000-default.conf
 
 # ===== Install phpMyAdmin =====
@@ -47,9 +35,12 @@ RUN chmod +x /filebrowser/get.sh \
 
 # ===== WordPress =====
 COPY wordpress-6.9.4.tar.gz /tmp/latest.tar.gz
+COPY wordpress/.htaccess /tmp/wordpress.htaccess
 RUN cd /tmp \
  && tar -xzf latest.tar.gz \
- && mv wordpress/* /var/www/html/
+ && mv wordpress/* /var/www/html/ \
+ && rm -f /var/www/html/index.html \
+ && cp /tmp/wordpress.htaccess /var/www/html/.htaccess
 
 # ===== Permissions =====
 RUN chown -R www-data:www-data /var/www/html
