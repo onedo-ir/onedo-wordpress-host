@@ -71,6 +71,7 @@ Point your edge/proxy at the Docker HTTP port. MariaDB is not published on the h
 ```bash
 git clone https://gitea.tmayt.ir/thaiostream/wp.git
 cd wp
+cp .env.example .env   # then edit passwords
 docker compose build
 docker compose up -d
 ```
@@ -93,18 +94,18 @@ Look for the `FIRST RUN SETUP COMPLETED` block.
 
 ## Environment variables
 
-Set these in `docker-compose.yml` under `environment:`:
+Copy `.env.example` to `.env` and set values there. Compose loads `.env` for interpolation and passes it into the container via `env_file` (no passwords in `docker-compose.yml`).
 
-| Variable | Description | Default (if unset) |
-|----------|-------------|----------------------|
-| `DB_NAME` | WordPress database name | `wordpress` |
-| `DB_USER` | WordPress DB user | `wordpress` |
-| `DB_PASS` | WordPress DB password | `123456` |
-| `DB_ROOT_PASS` | MariaDB `root` password | `root123456` |
-| `FILEBROWSER_USER` | FileBrowser login | `admin` |
-| `FILEBROWSER_PASS` | FileBrowser password | `admin123@qwe` |
+| Variable | Description |
+|----------|-------------|
+| `CONTAINER_NAME` | Docker `container_name` |
+| `PORT_HTTP` | Host port mapped to container `80` |
+| `PUBLIC_HOST` | Public domain (optional; used by the stack when set) |
+| `PANEL_USER` / `PANEL_PASS` | `/panel` login |
+| `FILEBROWSER_USER` / `FILEBROWSER_PASS` | FileBrowser login |
+| `DB_NAME` / `DB_USER` / `DB_PASS` / `DB_ROOT_PASS` | MariaDB / WordPress DB |
 
-**Change defaults before production.** The sample `docker-compose.yml` uses weak passwords for local testing only.
+**Change defaults before production.** Keep `.env` out of git (listed in `.gitignore`).
 
 ---
 

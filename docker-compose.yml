@@ -1,19 +1,12 @@
 services:
   wordpress:
     image: gitea.tmayt.ir/thaiostream/wp
-    container_name: wp
+    container_name: ${CONTAINER_NAME:-wp}
     build: .
     ports:
-      - "80:80"
-    environment:
-      FILEBROWSER_USER: admin
-      FILEBROWSER_PASS: admin123@qwe
-      PANEL_USER: admin
-      PANEL_PASS: admin123@panel
-      DB_NAME: wordpress
-      DB_USER: wordpress
-      DB_PASS: 123456
-      DB_ROOT_PASS: root123456
+      - "${PORT_HTTP:-80}:80"
+    env_file:
+      - .env
     volumes:
       - wp_html:/var/www/html
       - wp_db:/var/lib/mysql
