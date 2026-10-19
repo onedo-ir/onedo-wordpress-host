@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}ورود — پنل مدیریت{% endblock %}
+{% block auth %}
+<div class="login-page">
+  <form class="login-box" method="post" action="{{ url_for('login', next=next_url) }}">
+    <h1>پنل مدیریت</h1>
+    <p class="sub">برای دسترسی به فایل‌منیجر، phpMyAdmin و ابزارهای سرور وارد شوید.</p>
+    {% if error %}
+    <div class="alert err">{{ error }}</div>
+    {% endif %}
+    <input type="hidden" name="next" value="{{ next_url }}">
+    <label for="username">نام کاربری</label>
+    <input id="username" name="username" type="text" autocomplete="username" required autofocus>
+    <label for="password">رمز عبور</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required>
+    <button class="btn" type="submit">ورود</button>
+  </form>
+</div>
+{% endblock %}

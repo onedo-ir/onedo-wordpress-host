@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}خانه — پنل مدیریت{% endblock %}
+{% block body %}
+<h1 class="page-title">خانه</h1>
+<p class="muted">تا وقتی اینجا وارد نباشید، آدرس‌های فایل‌منیجر و phpMyAdmin از بیرون بسته هستند.</p>
+
+<div class="grid" style="margin-top:1.25rem">
+  <div class="tile">
+    <h2>فایل‌منیجر</h2>
+    <p>مدیریت فایل‌های داخل کانتینر</p>
+    <a class="btn" href="{{ filebrowser_url }}" target="_blank" rel="noopener">باز کردن FileBrowser</a>
+    <p class="muted" style="margin-top:0.75rem"><code class="ltr">{{ filebrowser_url }}</code></p>
+  </div>
+  <div class="tile">
+    <h2>phpMyAdmin</h2>
+    <p>مدیریت دیتابیس MariaDB</p>
+    <a class="btn" href="{{ phpmyadmin_url }}" target="_blank" rel="noopener">باز کردن phpMyAdmin</a>
+    <p class="muted" style="margin-top:0.75rem"><code class="ltr">{{ phpmyadmin_url }}</code></p>
+  </div>
+  <div class="tile">
+    <h2>تنظیمات فایل‌ها</h2>
+    <p>ویرایش PHP، Apache و فایل‌های مهم</p>
+    <a class="btn secondary" href="{{ url_for('configs') }}">رفتن به تنظیمات</a>
+  </div>
+  <div class="tile">
+    <h2>شل کانتینر</h2>
+    <p>اجرای دستور داخل همین کانتینر</p>
+    <a class="btn secondary" href="{{ url_for('shell') }}">باز کردن شل</a>
+  </div>
+</div>
+
+{% if files %}
+<p class="muted" style="margin-top:1.5rem">{{ files|length }} فایل قابل ویرایش در بخش تنظیمات در دسترس است.</p>
+{% endif %}
+{% endblock %}

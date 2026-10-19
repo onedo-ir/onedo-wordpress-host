@@ -31,6 +31,7 @@ fi
 
 # Generate random passwords
 FILEBROWSER_PASS=$(openssl rand -base64 18 | tr -dc 'A-Za-z0-9' | head -c 24)
+PANEL_PASS=$(openssl rand -base64 18 | tr -dc 'A-Za-z0-9' | head -c 24)
 DB_PASS=$(openssl rand -base64 18 | tr -dc 'A-Za-z0-9' | head -c 24)
 
 # Host port for edge → container:80 (not shown in public URLs)
@@ -50,6 +51,8 @@ services:
     environment:
       FILEBROWSER_USER: admin
       FILEBROWSER_PASS: ${FILEBROWSER_PASS}
+      PANEL_USER: admin
+      PANEL_PASS: ${PANEL_PASS}
       DB_NAME: ${SITE_NAME}_db
       DB_USER: ${SITE_NAME}_usr
       DB_PASS: ${DB_PASS}
@@ -79,8 +82,11 @@ echo "Website Name           : ${SITE_NAME}"
 echo "Domain                 : ${SITE_DOMAIN}"
 echo "Docker HTTP port (edge): ${PORT_HTTP}"
 echo "WordPress URL          : http://${SITE_DOMAIN}/"
-echo "phpMyAdmin URL         : http://${SITE_DOMAIN}/phpmyadmin"
-echo "FileBrowser URL        : http://${SITE_DOMAIN}/filebrowser"
+echo "Panel URL              : http://${SITE_DOMAIN}/panel"
+echo "Panel User             : admin"
+echo "Panel Password         : ${PANEL_PASS}"
+echo "phpMyAdmin URL         : http://${SITE_DOMAIN}/phpmyadmin  (needs panel login first)"
+echo "FileBrowser URL        : http://${SITE_DOMAIN}/filebrowser (needs panel login first)"
 echo "FileBrowser User       : admin"
 echo "FileBrowser Password   : ${FILEBROWSER_PASS}"
 echo "Database Password      : ${DB_PASS}"

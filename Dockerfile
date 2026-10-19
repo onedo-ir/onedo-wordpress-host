@@ -12,6 +12,7 @@ RUN echo "deb http://mirror.arvancloud.ir/ubuntu/ jammy main restricted universe
 RUN apt-get update && apt-get install -y --no-install-recommends \
     apache2 mariadb-server \
     php php-fpm php-mysql php-cli php-curl php-xml php-mbstring php-zip php-gd php-opcache \
+    python3 python3-flask python3-gunicorn \
     wget curl unzip tar openssl supervisor ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
@@ -21,6 +22,7 @@ COPY performance/apache-mpm.conf /etc/apache2/conf-available/mpm-tuning.conf
 COPY performance/apache-performance.conf /etc/apache2/conf-available/performance.conf
 COPY performance/apache-php-fpm.conf /etc/apache2/conf-available/php-fpm.conf
 COPY performance/apache-protect.conf /etc/apache2/conf-available/protect.conf
+COPY panel/apache-panel.conf /etc/apache2/conf-available/panel.conf
 RUN set -eux; \
     # PHP mod_* pins mpm_prefork — disable PHP SAPIs first, then switch MPM
     a2dismod php8.1 2>/dev/null || true; \
@@ -29,7 +31,12 @@ RUN set -eux; \
     a2dismod mpm_prefork; \
     a2enmod mpm_event; \
     a2enmod rewrite proxy proxy_http proxy_fcgi setenvif headers deflate expires reqtimeout; \
-    a2enconf mpm-tuning performance php-fpm protect; \
+    a2enconf mpm-tuning performance php-fpm protect panel; \
+    # Placeholder gate (replaced at container start with real token)
+    printf '%s\n' \
+      'RewriteCond %{REQUEST_URI} ^/(filebrowser|phpmyadmin)(/|$) [NC]' \
+      'RewriteRule ^ /panel/login?next=%{REQUEST_URI} [R=302,L,QSA]' \
+      > /etc/apache2/panel-gate.rewrite; \
     sed -i '/<Directory \/var\/www\/>/,/<\/Directory>/ s/AllowOverride None/AllowOverride All/' /etc/apache2/apache2.conf; \
     a2ensite 000-default.conf; \
     sed -i 's|^ErrorLog .*|ErrorLog ${APACHE_LOG_DIR}/error.log|' /etc/apache2/apache2.conf
@@ -91,6 +98,12 @@ RUN cd /tmp \
 # ===== Permissions =====
 RUN chown -R www-data:www-data /var/www/html
 
+# ===== Admin panel (/panel) =====
+COPY panel /opt/panel
+COPY panel/start.sh /usr/local/bin/panel-start.sh
+RUN chmod +x /usr/local/bin/panel-start.sh /opt/panel/start.sh \
+ && chmod -R a+rX /opt/panel
+
 # ===== Supervisor config =====
 COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
@@ -101,6 +114,10 @@ RUN chmod +x /usr/local/bin/filebrowser-start.sh
 # ===== Init script =====
 COPY init.sh /init.sh
 RUN chmod +x /init.sh
+
+# ===== Container entry (writes panel gate, then supervisord) =====
+COPY container-start.sh /usr/local/bin/container-start.sh
+RUN chmod +x /usr/local/bin/container-start.sh
 
 # ===== IonCube Loader =====
 COPY ioncube /ioncube
@@ -134,4 +151,4 @@ RUN curl -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli
 
 EXPOSE 80
 
-CMD ["/usr/bin/supervisord", "-n"]
+CMD ["/usr/local/bin/container-start.sh"]

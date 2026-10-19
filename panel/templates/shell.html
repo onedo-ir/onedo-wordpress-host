@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}شل — پنل مدیریت{% endblock %}
+{% block body %}
+<h1 class="page-title">شل کانتینر</h1>
+<p class="muted">دستور در همین کانتینر اجرا می‌شود (timeout محدود). دسترسی کامل root مانند FileBrowser است — با احتیاط استفاده کنید.</p>
+
+<form method="post">
+  <label for="command">دستور</label>
+  <input id="command" name="command" type="text" class="ltr" value="{{ command }}" placeholder="مثلاً: df -h" autocomplete="off" autofocus>
+  <div class="row-actions">
+    <button class="btn" type="submit">اجرا</button>
+  </div>
+</form>
+
+{% if output is defined and (output or command) %}
+<label style="margin-top:1.25rem">خروجی</label>
+<pre class="shell-out">{{ output }}</pre>
+{% endif %}
+{% endblock %}

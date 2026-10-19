@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}تنظیمات فایل‌ها — پنل مدیریت{% endblock %}
+{% block body %}
+<h1 class="page-title">تنظیمات فایل‌های مهم</h1>
+<p class="muted">فقط مسیرهای ازپیش‌مجاز (PHP / Apache / MariaDB / وردپرس) قابل ویرایش‌اند.</p>
+
+{% if message %}<div class="alert ok">{{ message }}</div>{% endif %}
+{% if error %}<div class="alert err">{{ error }}</div>{% endif %}
+
+<form method="get" class="path-bar">
+  <div style="flex:1">
+    <label for="path">فایل</label>
+    <select id="path" name="path" onchange="this.form.submit()">
+      {% for f in files %}
+      <option value="{{ f }}" {% if f == selected %}selected{% endif %}>{{ f }}</option>
+      {% endfor %}
+    </select>
+  </div>
+</form>
+
+{% if selected %}
+<form method="post">
+  <input type="hidden" name="path" value="{{ selected }}">
+  <input type="hidden" name="action" value="save">
+  <label for="content">محتوا — <code class="ltr">{{ selected }}</code></label>
+  <textarea id="content" name="content" spellcheck="false">{{ content }}</textarea>
+  <div class="row-actions">
+    <button class="btn" type="submit">ذخیره فایل</button>
+  </div>
+</form>
+
+<form method="post" class="row-actions">
+  <input type="hidden" name="path" value="{{ selected }}">
+  <button class="btn secondary" type="submit" name="action" value="restart_php">ری‌استارت PHP-FPM</button>
+  <button class="btn secondary" type="submit" name="action" value="reload_apache">Reload آپاچی</button>
+</form>
+{% else %}
+<p class="alert err">فایل مجازی برای ویرایش پیدا نشد.</p>
+{% endif %}
+{% endblock %}
