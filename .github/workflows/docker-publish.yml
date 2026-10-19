@@ -23,9 +23,12 @@ env:
 jobs:
   build-and-push:
     # Skip ordinary pushes; only build when commit message contains "build"
+    # (no toLower — Gitea Actions does not implement it)
     if: >
       github.event_name == 'workflow_dispatch' ||
-      contains(toLower(github.event.head_commit.message), 'build')
+      contains(github.event.head_commit.message, 'build') ||
+      contains(github.event.head_commit.message, 'Build') ||
+      contains(github.event.head_commit.message, 'BUILD')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
