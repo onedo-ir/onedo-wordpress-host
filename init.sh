@@ -96,6 +96,7 @@ define('WP_POST_REVISIONS', 5);
 define('EMPTY_TRASH_DAYS', 7);
 define('AUTOSAVE_INTERVAL', 120);
 define('WP_CRON_LOCK_TIMEOUT', 60);
+define('DISABLE_WP_CRON', true);
 define('CONCATENATE_SCRIPTS', true);
 define('DISALLOW_FILE_EDIT', true);
 /* END WP_PERF_TUNING */
@@ -119,8 +120,47 @@ EOF
     echo "[INIT] Applied WordPress performance constants"
 }
 
+# Offload cron from page views (stops loopback storms into php-fpm).
+# Supervisor runs due events every few minutes instead.
+ensure_disable_wp_cron() {
+    local cfg="/var/www/html/wp-config.php"
+    if [ ! -f "$cfg" ]; then
+        return 0
+    fi
+
+    if grep -q "DISABLE_WP_CRON" "$cfg" 2>/dev/null; then
+        return 0
+    fi
+
+    local block_file
+    block_file="$(mktemp)"
+    cat > "$block_file" <<'EOF'
+
+/* WP_CRON_OFFLOAD */
+define('DISABLE_WP_CRON', true);
+/* END WP_CRON_OFFLOAD */
+
+EOF
+
+    if grep -q "wp-settings.php" "$cfg"; then
+        awk -v bf="$block_file" '
+            /wp-settings\.php/ && !done {
+                while ((getline line < bf) > 0) print line
+                close(bf)
+                done=1
+            }
+            { print }
+        ' "$cfg" > "${cfg}.tmp" && mv "${cfg}.tmp" "$cfg"
+    else
+        cat "$block_file" >> "$cfg"
+    fi
+    rm -f "$block_file"
+    echo "[INIT] Disabled WP-Cron on page load (supervisor handles due events)"
+}
+
 ensure_wordpress_htaccess
 ensure_wp_performance_config
+ensure_disable_wp_cron
 
 # =========================
 # USE ENV (DEFAULTS ONLY IF NOT PROVIDED)

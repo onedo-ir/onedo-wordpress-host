@@ -20,6 +20,7 @@ COPY apache/000-default.conf /etc/apache2/sites-available/000-default.conf
 COPY performance/apache-mpm.conf /etc/apache2/conf-available/mpm-tuning.conf
 COPY performance/apache-performance.conf /etc/apache2/conf-available/performance.conf
 COPY performance/apache-php-fpm.conf /etc/apache2/conf-available/php-fpm.conf
+COPY performance/apache-protect.conf /etc/apache2/conf-available/protect.conf
 RUN set -eux; \
     # PHP mod_* pins mpm_prefork — disable PHP SAPIs first, then switch MPM
     a2dismod php8.1 2>/dev/null || true; \
@@ -27,8 +28,8 @@ RUN set -eux; \
     a2dismod php8.3 2>/dev/null || true; \
     a2dismod mpm_prefork; \
     a2enmod mpm_event; \
-    a2enmod rewrite proxy proxy_http proxy_fcgi setenvif headers deflate expires; \
-    a2enconf mpm-tuning performance php-fpm; \
+    a2enmod rewrite proxy proxy_http proxy_fcgi setenvif headers deflate expires reqtimeout; \
+    a2enconf mpm-tuning performance php-fpm protect; \
     sed -i '/<Directory \/var\/www\/>/,/<\/Directory>/ s/AllowOverride None/AllowOverride All/' /etc/apache2/apache2.conf; \
     a2ensite 000-default.conf; \
     sed -i 's|^ErrorLog .*|ErrorLog ${APACHE_LOG_DIR}/error.log|' /etc/apache2/apache2.conf
