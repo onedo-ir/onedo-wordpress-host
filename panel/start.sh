@@ -23,7 +23,8 @@ if pgrep -x apache2 >/dev/null 2>&1; then
 fi
 
 cd /opt/panel
-exec gunicorn \
+# Use python3 -m so PATH does not need a gunicorn console script
+exec python3 -m gunicorn \
   --bind 127.0.0.1:9090 \
   --workers 1 \
   --threads 4 \
