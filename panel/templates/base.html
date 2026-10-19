@@ -17,6 +17,7 @@
       <div class="nav-links">
         <a href="{{ url_for('dashboard') }}" class="{% if request.endpoint == 'dashboard' %}active{% endif %}">خانه</a>
         <a href="{{ url_for('configs') }}" class="{% if request.endpoint == 'configs' %}active{% endif %}">تنظیمات فایل‌ها</a>
+        <a href="{{ url_for('backup') }}" class="{% if request.endpoint in ('backup', 'backup_download') %}active{% endif %}">بکاپ</a>
         <a href="{{ url_for('shell') }}" class="{% if request.endpoint == 'shell' %}active{% endif %}">شل</a>
         <span class="muted">{{ panel_user }}</span>
         <a href="{{ url_for('logout') }}">خروج</a>

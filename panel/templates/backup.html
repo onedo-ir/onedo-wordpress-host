@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}بکاپ — پنل مدیریت{% endblock %}
+{% block body %}
+<h1 class="page-title">بکاپ و ریستور</h1>
+<p class="muted">آرشیو شامل فایل‌های وردپرس (<code class="ltr">/var/www/html</code>) و دامپ دیتابیس MariaDB است.</p>
+
+{% if message %}<div class="alert ok">{{ message }}</div>{% endif %}
+{% if error %}<div class="alert err">{{ error }}</div>{% endif %}
+
+<div class="grid" style="margin-top:1.25rem">
+  <div class="tile">
+    <h2>دانلود بکاپ</h2>
+    <p>ساخت آرشیو <code class="ltr">.tar.gz</code> از فایل‌ها و دیتابیس و دانلود آن.</p>
+    <a class="btn" href="{{ url_for('backup_download') }}">دانلود بکاپ</a>
+    <p class="muted" style="margin-top:0.75rem">ساخت آرشیو ممکن است چند دقیقه طول بکشد.</p>
+  </div>
+  <div class="tile">
+    <h2>ریستور بکاپ</h2>
+    <p>آپلود همان آرشیو بکاپ برای جایگزینی فایل‌ها و دیتابیس. این کار برگشت‌ناپذیر است.</p>
+    <form method="post" enctype="multipart/form-data" onsubmit="return confirm('ریستور بکاپ فایل‌ها و دیتابیس فعلی را جایگزین می‌کند. ادامه می‌دهید؟');">
+      <input type="hidden" name="action" value="restore">
+      <label for="backup_file">فایل بکاپ</label>
+      <input id="backup_file" name="backup_file" type="file" accept=".tar.gz,.tgz,application/gzip,application/x-gzip" required>
+      <div class="row-actions">
+        <button class="btn danger" type="submit">ریستور بکاپ</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

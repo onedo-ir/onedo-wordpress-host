@@ -27,7 +27,7 @@ exec gunicorn \
   --bind 127.0.0.1:9090 \
   --workers 1 \
   --threads 4 \
-  --timeout 120 \
+  --timeout 900 \
   --access-logfile - \
   --error-logfile - \
   app:app
