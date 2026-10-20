@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}مانیتور منابع — پنل مدیریت{% endblock %}
+{% block topbar_title %}مانیتور منابع{% endblock %}
+{% block body %}
+{% set cpu = stats.cpu_percent or 0 %}
+{% set mem = stats.memory.percent if stats.memory else 0 %}
+{% set swap = stats.swap.percent if stats.swap else 0 %}
+
+<div id="monitor-root" data-stats-url="{{ url_for('api_stats') }}">
+  <h1 class="page-title">
+    مانیتور منابع
+    <span class="live-badge">زنده</span>
+  </h1>
+  <p class="muted">مصرف CPU، حافظه، دیسک و بار سیستم — به‌روزرسانی خودکار هر چند ثانیه.</p>
+  <p class="muted">آخرین به‌روزرسانی: <span id="stats-ts">—</span></p>
+
+  <div class="monitor-grid">
+    <div class="meter-card" id="meter-cpu">
+      <div class="meter-head">
+        <span class="meter-name">CPU</span>
+        <span class="meter-value">{{ '%.1f'|format(cpu) }}%</span>
+      </div>
+      <div class="bar"><div class="bar-fill" style="width:{{ cpu }}%"></div></div>
+      <p class="meter-detail">درصد استفاده لحظه‌ای پردازنده</p>
+    </div>
+
+    <div class="meter-card" id="meter-mem">
+      <div class="meter-head">
+        <span class="meter-name">حافظه (RAM)</span>
+        <span class="meter-value">{{ '%.1f'|format(mem) }}%</span>
+      </div>
+      <div class="bar"><div class="bar-fill" style="width:{{ mem }}%"></div></div>
+      <p class="meter-detail" id="mem-detail">در حال بارگذاری…</p>
+    </div>
+
+    <div class="meter-card" id="meter-swap">
+      <div class="meter-head">
+        <span class="meter-name">سواپ</span>
+        <span class="meter-value">{{ '%.1f'|format(swap) }}%</span>
+      </div>
+      <div class="bar"><div class="bar-fill" style="width:{{ swap }}%"></div></div>
+      <p class="meter-detail" id="swap-detail">در حال بارگذاری…</p>
+    </div>
+  </div>
+
+  <div class="stat-pills">
+    <div class="stat-pill">
+      <span class="label">بار سیستم (۱ / ۵ / ۱۵ دقیقه)</span>
+      <span class="value" id="loadavg">
+        {% if stats.loadavg %}
+          {{ '%.2f'|format(stats.loadavg[0]) }} · {{ '%.2f'|format(stats.loadavg[1]) }} · {{ '%.2f'|format(stats.loadavg[2]) }}
+        {% else %}—{% endif %}
+      </span>
+    </div>
+    <div class="stat-pill">
+      <span class="label">آپتایم</span>
+      <span class="value" id="uptime">—</span>
+    </div>
+    <div class="stat-pill">
+      <span class="label">تعداد پروسس‌ها</span>
+      <span class="value" id="proc-count">{{ stats.process_count or '—' }}</span>
+    </div>
+  </div>
+
+  <h2 class="section-label">فضای دیسک</h2>
+  <div class="monitor-grid" id="disk-meters">
+    {% for d in stats.disks %}
+    <div class="meter-card">
+      <div class="meter-head">
+        <span class="meter-name ltr">{{ d.path }}</span>
+        <span class="meter-value">{{ '%.1f'|format(d.percent) }}%</span>
+      </div>
+      <div class="bar"><div class="bar-fill" style="width:{{ d.percent }}%"></div></div>
+      <p class="meter-detail">مصرف دیسک</p>
+    </div>
+    {% else %}
+    <p class="muted">اطلاعات دیسک در دسترس نیست.</p>
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

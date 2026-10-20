@@ -1,10 +1,16 @@
 {% extends "base.html" %}
 {% block title %}خانه — پنل مدیریت{% endblock %}
+{% block topbar_title %}خانه{% endblock %}
 {% block body %}
 <h1 class="page-title">خانه</h1>
 <p class="muted">تا وقتی اینجا وارد نباشید، آدرس‌های فایل‌منیجر و phpMyAdmin از بیرون بسته هستند.</p>
 
 <div class="grid" style="margin-top:1.25rem">
+  <div class="tile">
+    <h2>مانیتور منابع</h2>
+    <p>مصرف CPU، حافظه، دیسک و بار سیستم به‌صورت زنده</p>
+    <a class="btn" href="{{ url_for('monitor') }}">باز کردن مانیتور</a>
+  </div>
   <div class="tile">
     <h2>فایل‌منیجر</h2>
     <p>مدیریت فایل‌های داخل کانتینر</p>
@@ -28,9 +34,9 @@
     <a class="btn secondary" href="{{ url_for('backup') }}">رفتن به بکاپ</a>
   </div>
   <div class="tile">
-    <h2>شل کانتینر</h2>
-    <p>اجرای دستور داخل همین کانتینر</p>
-    <a class="btn secondary" href="{{ url_for('shell') }}">باز کردن شل</a>
+    <h2>کنسول</h2>
+    <p>ترمینال تعاملی داخل همین کانتینر</p>
+    <a class="btn secondary" href="{{ url_for('shell') }}">باز کردن کنسول</a>
   </div>
 </div>
 

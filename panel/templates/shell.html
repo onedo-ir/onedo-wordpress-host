@@ -1,19 +1,48 @@
 {% extends "base.html" %}
-{% block title %}شل — پنل مدیریت{% endblock %}
+{% block title %}کنسول — پنل مدیریت{% endblock %}
+{% block topbar_title %}کنسول{% endblock %}
 {% block body %}
-<h1 class="page-title">شل کانتینر</h1>
-<p class="muted">دستور در همین کانتینر اجرا می‌شود (timeout محدود). دسترسی کامل root مانند FileBrowser است — با احتیاط استفاده کنید.</p>
+<h1 class="page-title">کنسول</h1>
+<p class="muted">ترمینال تعاملی روی همین کانتینر (timeout محدود). دسترسی root — با احتیاط استفاده کنید. تاریخچه: ↑ ↓ · پاک‌کردن: <code class="ltr">clear</code> یا Ctrl+L</p>
 
-<form method="post">
-  <label for="command">دستور</label>
-  <input id="command" name="command" type="text" class="ltr" value="{{ command }}" placeholder="مثلاً: df -h" autocomplete="off" autofocus>
-  <div class="row-actions">
-    <button class="btn" type="submit">اجرا</button>
+<div
+  class="console"
+  id="console"
+  data-api-url="{{ url_for('api_shell') }}"
+  data-timeout="{{ shell_timeout }}"
+>
+  <div class="console-chrome">
+    <span class="console-dot red" aria-hidden="true"></span>
+    <span class="console-dot yellow" aria-hidden="true"></span>
+    <span class="console-dot green" aria-hidden="true"></span>
+    <span class="console-title ltr">root@container — bash</span>
   </div>
-</form>
 
-{% if output is defined and (output or command) %}
-<label style="margin-top:1.25rem">خروجی</label>
-<pre class="shell-out">{{ output }}</pre>
-{% endif %}
+  <div class="console-body" id="console-body" tabindex="0">
+    <div class="console-lines" id="console-lines">
+      <div class="console-sys">آماده. دستور را وارد کنید و Enter بزنید.</div>
+      {% if command %}
+      <div class="console-cmd"><span class="console-prompt">root@container:~#</span> <span class="ltr">{{ command }}</span></div>
+      {% if output %}<pre class="console-out">{{ output }}</pre>{% endif %}
+      {% if exit_code is not none %}<div class="console-exit">[exit {{ exit_code }}]</div>{% endif %}
+      {% endif %}
+    </div>
+
+    <form class="console-input-row" id="console-form" method="post" action="{{ url_for('shell') }}" autocomplete="off">
+      <label class="console-prompt" for="console-input">root@container:~#</label>
+      <input
+        id="console-input"
+        class="console-input ltr"
+        name="command"
+        type="text"
+        spellcheck="false"
+        autocomplete="off"
+        autofocus
+        placeholder=""
+        aria-label="دستور کنسول"
+      >
+      <button class="console-run" type="submit" title="اجرا">↵</button>
+    </form>
+  </div>
+</div>
 {% endblock %}

@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import time
 from datetime import datetime, timezone
 from functools import wraps
 from glob import glob
@@ -17,6 +18,7 @@ from pathlib import Path
 
 from flask import (
     Flask,
+    jsonify,
     redirect,
     render_template,
     request,
@@ -144,6 +146,129 @@ def db_settings() -> dict[str, str]:
         "user": os.environ.get("DB_USER", "wordpress"),
         "pass": os.environ.get("DB_PASS", ""),
         "root_pass": os.environ.get("DB_ROOT_PASS", ""),
+    }
+
+
+def _read_meminfo() -> dict[str, int]:
+    info: dict[str, int] = {}
+    try:
+        with open("/proc/meminfo", encoding="utf-8") as fh:
+            for line in fh:
+                parts = line.split()
+                if len(parts) >= 2 and parts[0].endswith(":"):
+                    key = parts[0][:-1]
+                    try:
+                        info[key] = int(parts[1])
+                    except ValueError:
+                        continue
+    except OSError:
+        pass
+    return info
+
+
+def _cpu_times() -> tuple[int, int] | None:
+    try:
+        with open("/proc/stat", encoding="utf-8") as fh:
+            parts = fh.readline().split()
+        if parts[0] != "cpu" or len(parts) < 5:
+            return None
+        nums = [int(x) for x in parts[1:]]
+        total = sum(nums)
+        idle = nums[3] + (nums[4] if len(nums) > 4 else 0)
+        return total, idle
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _cpu_percent(sample_ms: int = 120) -> float | None:
+    a = _cpu_times()
+    if not a:
+        return None
+    time.sleep(sample_ms / 1000.0)
+    b = _cpu_times()
+    if not b:
+        return None
+    dt, di = b[0] - a[0], b[1] - a[1]
+    if dt <= 0:
+        return 0.0
+    return round(max(0.0, min(100.0, (1.0 - di / dt) * 100.0)), 1)
+
+
+def _loadavg() -> list[float]:
+    try:
+        with open("/proc/loadavg", encoding="utf-8") as fh:
+            parts = fh.read().split()
+        return [float(parts[0]), float(parts[1]), float(parts[2])]
+    except (OSError, ValueError, IndexError):
+        return []
+
+
+def _uptime_seconds() -> float | None:
+    try:
+        with open("/proc/uptime", encoding="utf-8") as fh:
+            return float(fh.read().split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _disk_usage(path: str) -> dict[str, int | float] | None:
+    try:
+        usage = shutil.disk_usage(path)
+        total = usage.total or 1
+        return {
+            "path": path,
+            "total": usage.total,
+            "used": usage.used,
+            "free": usage.free,
+            "percent": round(usage.used / total * 100.0, 1),
+        }
+    except OSError:
+        return None
+
+
+def _process_count() -> int | None:
+    try:
+        return sum(1 for name in os.listdir("/proc") if name.isdigit())
+    except OSError:
+        return None
+
+
+def collect_system_stats() -> dict:
+    mem = _read_meminfo()
+    mem_total = mem.get("MemTotal", 0)
+    mem_available = mem.get("MemAvailable", mem.get("MemFree", 0))
+    mem_used = max(0, mem_total - mem_available) if mem_total else 0
+    swap_total = mem.get("SwapTotal", 0)
+    swap_free = mem.get("SwapFree", 0)
+    swap_used = max(0, swap_total - swap_free) if swap_total else 0
+
+    disks = []
+    for path in ("/", "/var/www/html", "/tmp"):
+        d = _disk_usage(path)
+        if not d:
+            continue
+        if any(x["total"] == d["total"] and x["free"] == d["free"] for x in disks):
+            continue
+        disks.append(d)
+
+    return {
+        "cpu_percent": _cpu_percent(),
+        "loadavg": _loadavg(),
+        "memory": {
+            "total_kb": mem_total,
+            "used_kb": mem_used,
+            "available_kb": mem_available,
+            "percent": round(mem_used / mem_total * 100.0, 1) if mem_total else 0.0,
+        },
+        "swap": {
+            "total_kb": swap_total,
+            "used_kb": swap_used,
+            "percent": round(swap_used / swap_total * 100.0, 1) if swap_total else 0.0,
+        },
+        "disks": disks,
+        "uptime_seconds": _uptime_seconds(),
+        "process_count": _process_count(),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -417,47 +542,112 @@ def configs():
     )
 
 
+@app.route("/panel/monitor")
+@login_required
+def monitor():
+    return set_gate_cookie(
+        app.make_response(
+            render_template("monitor.html", stats=collect_system_stats())
+        )
+    )
+
+
+@app.route("/panel/api/stats")
+@login_required
+def api_stats():
+    return jsonify(collect_system_stats())
+
+
+def run_shell_command(command: str) -> dict:
+    """Same container shell mechanism; returns structured result for console UI."""
+    command = (command or "").strip()
+    if not command:
+        return {"ok": False, "command": "", "output": "دستوری وارد نشده.", "exit_code": None}
+    if len(command) > 4000:
+        return {
+            "ok": False,
+            "command": command[:80] + "…",
+            "output": "دستور خیلی طولانی است.",
+            "exit_code": None,
+        }
+    try:
+        proc = subprocess.run(
+            command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=SHELL_TIMEOUT,
+            cwd="/",
+            env={**os.environ, "TERM": "xterm"},
+        )
+        parts = []
+        if proc.stdout:
+            parts.append(proc.stdout)
+        if proc.stderr:
+            parts.append(proc.stderr)
+        output = "".join(parts)
+        if len(output) > SHELL_MAX_OUTPUT:
+            output = output[:SHELL_MAX_OUTPUT] + "\n… [خروجی کوتاه شد]"
+        return {
+            "ok": True,
+            "command": command,
+            "output": output,
+            "exit_code": proc.returncode,
+        }
+    except subprocess.TimeoutExpired:
+        return {
+            "ok": False,
+            "command": command,
+            "output": f"زمان اجرا از {SHELL_TIMEOUT} ثانیه بیشتر شد؛ فرایند قطع شد.",
+            "exit_code": None,
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "command": command,
+            "output": f"خطا: {exc}",
+            "exit_code": None,
+        }
+
+
 @app.route("/panel/shell", methods=["GET", "POST"])
 @login_required
 def shell():
-    output = ""
-    command = ""
+    # Interactive console is client-driven; POST kept for no-JS fallback.
     if request.method == "POST":
-        command = (request.form.get("command") or "").strip()
-        if not command:
-            output = "دستوری وارد نشده."
-        elif len(command) > 4000:
-            output = "دستور خیلی طولانی است."
-        else:
-            try:
-                proc = subprocess.run(
-                    command,
-                    shell=True,
-                    capture_output=True,
-                    text=True,
-                    timeout=SHELL_TIMEOUT,
-                    cwd="/",
-                    env={**os.environ, "TERM": "xterm"},
+        result = run_shell_command(request.form.get("command") or "")
+        return set_gate_cookie(
+            app.make_response(
+                render_template(
+                    "shell.html",
+                    command=result["command"],
+                    output=result["output"],
+                    exit_code=result["exit_code"],
+                    shell_timeout=SHELL_TIMEOUT,
                 )
-                parts = []
-                if proc.stdout:
-                    parts.append(proc.stdout)
-                if proc.stderr:
-                    parts.append(proc.stderr)
-                parts.append(f"\n[exit {proc.returncode}]")
-                output = "".join(parts)
-            except subprocess.TimeoutExpired:
-                output = f"زمان اجرا از {SHELL_TIMEOUT} ثانیه بیشتر شد؛ فرایند قطع شد."
-            except Exception as exc:  # noqa: BLE001
-                output = f"خطا: {exc}"
-            if len(output) > SHELL_MAX_OUTPUT:
-                output = output[:SHELL_MAX_OUTPUT] + "\n… [خروجی کوتاه شد]"
-
+            )
+        )
     return set_gate_cookie(
         app.make_response(
-            render_template("shell.html", command=command, output=output)
+            render_template(
+                "shell.html",
+                command="",
+                output="",
+                exit_code=None,
+                shell_timeout=SHELL_TIMEOUT,
+            )
         )
     )
+
+
+@app.route("/panel/api/shell", methods=["POST"])
+@login_required
+def api_shell():
+    data = request.get_json(silent=True) or {}
+    command = data.get("command") if isinstance(data, dict) else None
+    if command is None:
+        command = request.form.get("command") or ""
+    return jsonify(run_shell_command(command))
 
 
 @app.route("/panel/backup", methods=["GET", "POST"])

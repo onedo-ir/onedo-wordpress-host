@@ -6,27 +6,73 @@
   <title>{% block title %}پنل مدیریت{% endblock %}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="{{ url_for('static', filename='panel.css') }}">
 </head>
-<body>
+<body class="{% if logged_in %}has-sidebar{% endif %}">
   {% if logged_in %}
-  <div class="wrap">
-    <nav class="nav">
-      <a class="brand" href="{{ url_for('dashboard') }}">پنل مدیریت</a>
-      <div class="nav-links">
-        <a href="{{ url_for('dashboard') }}" class="{% if request.endpoint == 'dashboard' %}active{% endif %}">خانه</a>
-        <a href="{{ url_for('configs') }}" class="{% if request.endpoint == 'configs' %}active{% endif %}">تنظیمات فایل‌ها</a>
-        <a href="{{ url_for('backup') }}" class="{% if request.endpoint in ('backup', 'backup_download') %}active{% endif %}">بکاپ</a>
-        <a href="{{ url_for('shell') }}" class="{% if request.endpoint == 'shell' %}active{% endif %}">شل</a>
-        <span class="muted">{{ panel_user }}</span>
-        <a href="{{ url_for('logout') }}">خروج</a>
+  <div class="app-shell">
+    <div class="sidebar-backdrop" id="sidebar-backdrop" hidden></div>
+
+    <aside class="sidebar" id="sidebar" aria-label="منوی پنل">
+      <div class="sidebar-brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <div>
+          <a class="brand" href="{{ url_for('dashboard') }}">پنل مدیریت</a>
+          <p class="brand-sub">کنترل سرور وردپرس</p>
+        </div>
       </div>
-    </nav>
-    {% block body %}{% endblock %}
+
+      <nav class="sidebar-nav">
+        <a href="{{ url_for('dashboard') }}" class="nav-item {% if request.endpoint == 'dashboard' %}active{% endif %}">
+          <span class="nav-ico" aria-hidden="true">⌂</span>
+          <span>خانه</span>
+        </a>
+        <a href="{{ url_for('monitor') }}" class="nav-item {% if request.endpoint == 'monitor' %}active{% endif %}">
+          <span class="nav-ico" aria-hidden="true">◉</span>
+          <span>مانیتور منابع</span>
+        </a>
+        <a href="{{ url_for('configs') }}" class="nav-item {% if request.endpoint == 'configs' %}active{% endif %}">
+          <span class="nav-ico" aria-hidden="true">✎</span>
+          <span>تنظیمات فایل‌ها</span>
+        </a>
+        <a href="{{ url_for('backup') }}" class="nav-item {% if request.endpoint in ('backup', 'backup_download') %}active{% endif %}">
+          <span class="nav-ico" aria-hidden="true">⇩</span>
+          <span>بکاپ</span>
+        </a>
+        <a href="{{ url_for('shell') }}" class="nav-item {% if request.endpoint == 'shell' %}active{% endif %}">
+          <span class="nav-ico" aria-hidden="true">›_</span>
+          <span>کنسول</span>
+        </a>
+      </nav>
+
+      <div class="sidebar-foot">
+        <div class="user-chip">
+          <span class="user-dot" aria-hidden="true"></span>
+          <span class="user-name">{{ panel_user }}</span>
+        </div>
+        <a class="nav-item logout" href="{{ url_for('logout') }}">خروج</a>
+      </div>
+    </aside>
+
+    <div class="main-area">
+      <header class="topbar">
+        <button type="button" class="menu-toggle" id="menu-toggle" aria-controls="sidebar" aria-expanded="false" aria-label="باز کردن منو">
+          <span></span><span></span><span></span>
+        </button>
+        <div class="topbar-title">
+          {% block topbar_title %}{% endblock %}
+        </div>
+      </header>
+      <main class="content">
+        {% block body %}{% endblock %}
+      </main>
+    </div>
   </div>
   {% else %}
     {% block auth %}{% endblock %}
   {% endif %}
+  <script src="{{ url_for('static', filename='panel.js') }}" defer></script>
+  {% block scripts %}{% endblock %}
 </body>
 </html>
