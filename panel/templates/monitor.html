@@ -7,11 +7,7 @@
 {% set swap = stats.swap.percent if stats.swap else 0 %}
 
 <div id="monitor-root" data-stats-url="{{ url_for('api_stats') }}">
-  <h1 class="page-title">
-    مانیتور منابع
-    <span class="live-badge">زنده</span>
-  </h1>
-  <p class="muted">مصرف CPU، حافظه، دیسک و بار سیستم — به‌روزرسانی خودکار هر چند ثانیه.</p>
+  <p class="muted page-lead">مصرف CPU، حافظه، دیسک و بار سیستم — به‌روزرسانی خودکار هر چند ثانیه. <span class="live-badge">زنده</span></p>
   <p class="muted">آخرین به‌روزرسانی: <span id="stats-ts">—</span></p>
 
   <div class="monitor-grid">

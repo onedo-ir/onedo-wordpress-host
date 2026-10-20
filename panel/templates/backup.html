@@ -1,9 +1,8 @@
 {% extends "base.html" %}
 {% block title %}بکاپ — پنل مدیریت{% endblock %}
-{% block topbar_title %}بکاپ{% endblock %}
+{% block topbar_title %}بکاپ و ریستور{% endblock %}
 {% block body %}
-<h1 class="page-title">بکاپ و ریستور</h1>
-<p class="muted">آرشیو شامل فایل‌های وردپرس (<code class="ltr">/var/www/html</code>) و دامپ دیتابیس MariaDB است.</p>
+<p class="muted page-lead">آرشیو شامل فایل‌های وردپرس (<code class="ltr">/var/www/html</code>) و دامپ دیتابیس MariaDB است.</p>
 
 {% if message %}<div class="alert ok">{{ message }}</div>{% endif %}
 {% if error %}<div class="alert err">{{ error }}</div>{% endif %}
@@ -13,7 +12,7 @@
     <h2>دانلود بکاپ</h2>
     <p>ساخت آرشیو <code class="ltr">.tar.gz</code> از فایل‌ها و دیتابیس و دانلود آن.</p>
     <a class="btn" href="{{ url_for('backup_download') }}">دانلود بکاپ</a>
-    <p class="muted" style="margin-top:0.75rem">ساخت آرشیو ممکن است چند دقیقه طول بکشد.</p>
+    <p class="muted">ساخت آرشیو ممکن است چند دقیقه طول بکشد.</p>
   </div>
   <div class="tile">
     <h2>ریستور بکاپ</h2>

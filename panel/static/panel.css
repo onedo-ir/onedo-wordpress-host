@@ -40,16 +40,22 @@ html, body {
 a { color: var(--accent); text-decoration: none; }
 a:hover { color: #5eead4; }
 
-/* ——— App shell: sidebar on the right ——— */
+/* ——— App shell: sidebar pinned to the physical right ——— */
 .app-shell {
-  display: flex;
-  flex-direction: row-reverse;
+  /* LTR grid so columns stay physical; children keep RTL text */
+  direction: ltr;
+  display: grid;
+  grid-template-columns: 1fr var(--sidebar-w);
+  grid-template-areas: "main side";
   min-height: 100vh;
+  width: 100%;
 }
 
 .sidebar {
-  width: var(--sidebar-w);
-  flex-shrink: 0;
+  grid-area: side;
+  direction: rtl;
+  width: 100%;
+  max-width: var(--sidebar-w);
   background: linear-gradient(180deg, #121a24 0%, #0e151e 100%);
   border-left: 1px solid var(--line);
   display: flex;
@@ -58,7 +64,10 @@ a:hover { color: #5eead4; }
   position: sticky;
   top: 0;
   height: 100vh;
+  max-height: 100vh;
   z-index: 40;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .sidebar-brand {
@@ -100,21 +109,27 @@ a:hover { color: #5eead4; }
 .sidebar-nav {
   display: flex;
   flex-direction: column;
+  flex-wrap: nowrap;
   gap: 0.25rem;
-  flex: 1;
+  flex: 1 1 auto;
+  width: 100%;
+  overflow-x: hidden;
   overflow-y: auto;
 }
 
 .nav-item {
   display: flex;
+  flex-direction: row;
   align-items: center;
   gap: 0.65rem;
+  width: 100%;
   padding: 0.7rem 0.85rem;
   border-radius: var(--radius-sm);
   color: var(--muted);
   text-decoration: none;
   font-weight: 500;
   font-size: 0.95rem;
+  white-space: nowrap;
   transition: background 0.2s var(--ease), color 0.2s var(--ease), transform 0.2s var(--ease);
 }
 
@@ -127,6 +142,10 @@ a:hover { color: #5eead4; }
 .nav-item.active {
   background: var(--accent-glow);
   color: var(--accent);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+[dir="rtl"] .nav-item.active {
   box-shadow: inset -3px 0 0 var(--accent);
 }
 
@@ -170,7 +189,8 @@ a:hover { color: #5eead4; }
 }
 
 .main-area {
-  flex: 1;
+  grid-area: main;
+  direction: rtl;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -180,19 +200,21 @@ a:hover { color: #5eead4; }
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  padding: 0.85rem 1.35rem;
+  padding: 1rem 1.35rem;
   border-bottom: 1px solid var(--line-soft);
-  background: rgba(12, 18, 25, 0.72);
+  background: rgba(12, 18, 25, 0.85);
   backdrop-filter: blur(10px);
   position: sticky;
   top: 0;
   z-index: 20;
+  min-height: 3.5rem;
 }
 
 .topbar-title {
-  font-weight: 600;
-  font-size: 0.95rem;
-  color: var(--muted);
+  font-weight: 700;
+  font-size: 1.15rem;
+  color: var(--text);
+  letter-spacing: -0.01em;
 }
 
 .menu-toggle {
@@ -241,19 +263,28 @@ body.sidebar-open .menu-toggle span:nth-child(3) {
   display: none;
 }
 
-/* ——— Mobile drawer from the right ——— */
+/* ——— Mobile drawer (slides in from the right) ——— */
 @media (max-width: 899px) {
-  .app-shell { display: block; }
+  .app-shell {
+    display: block;
+    direction: rtl;
+    grid-template-columns: none;
+    grid-template-areas: none;
+  }
 
   .menu-toggle { display: flex; }
 
   .sidebar {
+    grid-area: auto;
     position: fixed;
     top: 0;
     right: 0;
     left: auto;
+    width: min(var(--sidebar-w), 86vw);
+    max-width: min(var(--sidebar-w), 86vw);
     height: 100%;
-    transform: translateX(105%);
+    max-height: 100%;
+    transform: translateX(110%);
     transition: transform 0.32s var(--ease);
     box-shadow: var(--shadow);
     border-left: 1px solid var(--line);
@@ -588,7 +619,7 @@ textarea {
 }
 
 .btn.secondary {
-  background: transparent;
+  background: var(--bg2);
   color: var(--text);
   border: 1px solid var(--line);
   box-shadow: none;
@@ -597,7 +628,12 @@ textarea {
 .btn.secondary:hover {
   border-color: var(--accent-dim);
   color: var(--accent);
+  background: var(--accent-glow);
   filter: none;
+}
+
+a.btn {
+  text-decoration: none;
 }
 
 .btn.danger {
@@ -626,7 +662,7 @@ textarea {
 .grid {
   display: grid;
   gap: 1rem;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
 }
 
 .tile {
@@ -634,6 +670,8 @@ textarea {
   border: 1px solid var(--line);
   border-radius: var(--radius);
   padding: 1.35rem;
+  display: flex;
+  flex-direction: column;
   transition: border-color 0.25s var(--ease), transform 0.25s var(--ease), box-shadow 0.25s;
 }
 
@@ -648,18 +686,33 @@ textarea {
   font-size: 1.1rem;
 }
 
-.tile p {
-  margin: 0 0 0.9rem;
+.tile > h2 + p {
+  margin: 0;
   color: var(--muted);
   font-size: 0.92rem;
+  flex: 1 1 auto;
+}
+
+.tile .btn {
+  align-self: flex-start;
+  margin-top: 1.1rem;
+}
+
+.tile > .muted {
+  flex: 0 0 auto;
+  margin-top: 0.65rem;
 }
 
 .muted { color: var(--muted); font-size: 0.9rem; }
 
 h1.page-title {
-  margin: 0 0 0.35rem;
+  margin: 0 0 0.5rem;
   font-size: 1.55rem;
   letter-spacing: -0.02em;
+}
+
+.page-lead {
+  margin: 0 0 0.25rem;
 }
 
 .path-bar {
