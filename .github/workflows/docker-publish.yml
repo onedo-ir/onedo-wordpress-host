@@ -1,6 +1,7 @@
 # Build the WordPress stack image and replace the published :latest tag.
 # Runs only when a push to main includes the word "build" in the commit message,
 # or when triggered manually (workflow_dispatch).
+# Image version tag = sanitized commit subject (not the SHA hex).
 # Tuned for Gitea container registry (rejects buildx attestation / OCI index).
 #
 # Required repository secrets:
@@ -47,6 +48,24 @@ jobs:
           username: ${{ secrets.REGISTRY_USERNAME }}
           password: ${{ secrets.REGISTRY_PASSWORD }}
 
+      # Docker tags cannot use spaces / Persian / most punctuation — slugify subject.
+      # Fallback: short SHA only if the subject sanitizes to empty.
+      - name: Version from commit subject
+        id: meta
+        run: |
+          set -euo pipefail
+          SUBJECT=$(git log -1 --pretty=%s)
+          VERSION=$(printf '%s' "$SUBJECT" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed -E 's/[^a-z0-9._-]+/-/g; s/^[-.]+//; s/[-.]+$//; s/-+/-/g' \
+            | cut -c1-120)
+          if [ -z "$VERSION" ] || [ "$VERSION" = "." ] || [ "$VERSION" = ".." ]; then
+            VERSION=$(git rev-parse --short HEAD)
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Commit subject : ${SUBJECT}"
+          echo "Image version  : ${VERSION}"
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -56,4 +75,4 @@ jobs:
           sbom: false
           tags: |
             ${{ env.IMAGE_NAME }}:latest
-            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}

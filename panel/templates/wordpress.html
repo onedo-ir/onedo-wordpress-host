@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}نصب وردپرس — پنل مدیریت{% endblock %}
+{% block topbar_title %}نصب وردپرس{% endblock %}
+{% block body %}
+<p class="muted page-lead">هستهٔ وردپرس از این صفحه دانلود و در <code class="ltr">/var/www/html</code> نصب می‌شود. پس از نصب، ویزارد را از آدرس سایت کامل کنید.</p>
+
+{% if message %}<div class="alert ok">{{ message }}</div>{% endif %}
+{% if error %}<div class="alert err">{{ error }}</div>{% endif %}
+{% if versions_error %}<div class="alert err">{{ versions_error }}</div>{% endif %}
+
+<div class="grid" style="margin-top:1.25rem">
+  <div class="tile">
+    <h2>وضعیت فعلی</h2>
+    {% if wordpress_present %}
+    <p>وردپرس نصب است{% if current_version %} — نسخهٔ فعلی: <strong class="ltr">{{ current_version }}</strong>{% endif %}.</p>
+    {% else %}
+    <p>هنوز هستهٔ وردپرس در مسیر سایت نیست.</p>
+    {% endif %}
+    <p class="muted">دیتابیس از قبل توسط init آماده می‌شود؛ فقط فایل‌های هسته از اینجا نصب می‌شوند.</p>
+  </div>
+
+  <div class="tile wp-install-tile">
+    <h2>انتخاب نسخه و نصب</h2>
+    <p>فهرست رسمی نسخه‌های wordpress.org</p>
+    {% if versions %}
+    <form method="post" id="wp-install-form">
+      <input type="hidden" name="action" value="install">
+      <label for="version">نسخه</label>
+      <div class="custom-select" data-custom-select>
+        <select id="version" name="version" required>
+          {% for v in versions %}
+          <option value="{{ v.version }}"
+            {% if current_version and v.version == current_version %}selected
+            {% elif not current_version and v.status == 'latest' %}selected
+            {% endif %}
+          >{{ v.version }} — {{ v.status }}</option>
+          {% endfor %}
+        </select>
+        <button type="button" class="cs-trigger" aria-haspopup="listbox" aria-expanded="false">
+          <span class="cs-label">انتخاب نسخه…</span>
+          <span class="cs-caret" aria-hidden="true"></span>
+        </button>
+        <ul class="cs-list" role="listbox"></ul>
+      </div>
+
+      <label class="check-row" for="preserve_content">
+        <input id="preserve_content" name="preserve_content" type="checkbox" value="1" {% if wordpress_present %}checked{% endif %}>
+        <span>نگه داشتن <code class="ltr">wp-content</code> و محتوای موجود (پیشنهادی هنگام تعویض نسخه)</span>
+      </label>
+
+      <div class="row-actions">
+        <button class="btn" type="submit" id="wp-install-btn">نصب وردپرس</button>
+      </div>
+      <p class="muted">دانلود ممکن است چند دقیقه طول بکشد؛ صفحه را نبندید.</p>
+    </form>
+    {% else %}
+    <p class="alert err" style="margin-top:1rem">فهرست نسخه‌ها در دسترس نیست. اتصال خروجی کانتینر به wordpress.org را بررسی کنید.</p>
+    {% endif %}
+  </div>
+</div>
+
+{% if versions %}
+<details class="wp-version-list">
+  <summary>همهٔ نسخه‌ها ({{ versions|length }})</summary>
+  <ul class="wp-versions">
+    {% for v in versions %}
+    <li>
+      <span class="ltr">{{ v.version }}</span>
+      <span class="wp-status wp-status-{{ v.status }}">{{ v.status }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+</details>
+{% endif %}
+{% endblock %}
+{% block scripts %}
+<script>
+(function () {
+  var form = document.getElementById("wp-install-form");
+  var btn = document.getElementById("wp-install-btn");
+  if (form && btn) {
+    form.addEventListener("submit", function (e) {
+      if (!window.confirm("نصب/به‌روزرسانی هستهٔ وردپرس انجام شود؟")) {
+        e.preventDefault();
+        return;
+      }
+      btn.disabled = true;
+      btn.textContent = "در حال دانلود و نصب…";
+    });
+  }
+})();
+</script>
+{% endblock %}

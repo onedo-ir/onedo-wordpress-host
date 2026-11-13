@@ -5,12 +5,16 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import os
+import re
 import shutil
 import subprocess
 import tarfile
 import tempfile
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from functools import wraps
 from glob import glob
@@ -46,9 +50,39 @@ COOKIE_NAME = "panel_gate"
 SHELL_TIMEOUT = 45
 SHELL_MAX_OUTPUT = 200_000
 WP_ROOT = Path("/var/www/html")
+WP_HTACCESS_SRC = Path("/opt/wordpress.htaccess")
+WP_VERSIONS_API = "https://api.wordpress.org/core/stable-check/1.0/"
+WP_INSTALL_TIMEOUT = 600
+WP_VERSION_RE = re.compile(r"^\d+(?:\.\d+){1,3}$")
 BACKUP_WORKDIR = Path("/tmp/panel-backups")
 BACKUP_CREATE_TIMEOUT = 600
 BACKUP_RESTORE_TIMEOUT = 900
+
+PANEL_SETTINGS_PATH = Path("/config/panel-settings.json")
+PANEL_PATHS_ENV = Path("/config/panel-paths.env")
+DEFAULT_FILEBROWSER_PATH = "/filebrowser"
+DEFAULT_PHPMYADMIN_PATH = "/phpmyadmin"
+DEFAULT_PHP_VERSION = os.environ.get("DEFAULT_PHP_VERSION", "8.1").strip() or "8.1"
+AVAILABLE_PHP_VERSIONS = tuple(
+    v
+    for v in re.split(r"[\s,]+", os.environ.get("PHP_VERSIONS", "8.1 8.2 8.3 8.4"))
+    if re.fullmatch(r"\d+\.\d+", v)
+) or ("8.1", "8.2", "8.3", "8.4")
+PUBLIC_PATH_RE = re.compile(r"^/[A-Za-z0-9](?:[A-Za-z0-9_-]*/?[A-Za-z0-9_-]+)*$")
+RESERVED_PUBLIC_PATHS = {
+    "/panel",
+    "/index.php",
+    "/wp-admin",
+    "/wp-content",
+    "/wp-includes",
+    "/wp-json",
+    "/xmlrpc.php",
+}
+FILEBROWSER_APACHE_CONF = Path("/etc/apache2/conf-available/filebrowser.conf")
+PHPMYADMIN_APACHE_CONF = Path("/etc/apache2/conf-available/phpmyadmin.conf")
+PANEL_GATE_REWRITE = Path("/etc/apache2/panel-gate.rewrite")
+PANEL_TOOL_PATHS_REWRITE = Path("/etc/apache2/panel-tool-paths.rewrite")
+FILEBROWSER_DB = Path("/database/filebrowser.db")
 
 
 def panel_user() -> str:
@@ -60,12 +94,334 @@ def panel_pass() -> str:
 
 
 def gate_token() -> str:
-    """Cookie value Apache checks before allowing /filebrowser and /phpmyadmin."""
+    """Cookie value Apache checks before allowing tool paths (FileBrowser / phpMyAdmin)."""
     explicit = os.environ.get("PANEL_GATE_TOKEN", "").strip()
     if explicit:
         return explicit
     raw = f"{panel_user()}:{panel_pass()}:{os.environ.get('PANEL_SECRET', 'wp-panel-gate')}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def default_panel_settings() -> dict[str, str]:
+    return {
+        "filebrowser_path": DEFAULT_FILEBROWSER_PATH,
+        "phpmyadmin_path": DEFAULT_PHPMYADMIN_PATH,
+        "php_version": DEFAULT_PHP_VERSION,
+    }
+
+
+def normalize_public_path(raw: str) -> str:
+    value = (raw or "").strip()
+    if not value:
+        return ""
+    if not value.startswith("/"):
+        value = "/" + value
+    value = re.sub(r"/{2,}", "/", value)
+    if len(value) > 1:
+        value = value.rstrip("/")
+    return value
+
+
+def validate_public_path(path: str, *, label: str) -> str | None:
+    if not path or path == "/":
+        return f"مسیر {label} نمی‌تواند خالی یا ریشه باشد."
+    if not PUBLIC_PATH_RE.fullmatch(path):
+        return (
+            f"مسیر {label} فقط می‌تواند شامل حروف، عدد، - و _ باشد "
+            f"(مثل /filebrowser یا /pma)."
+        )
+    lowered = path.lower()
+    if lowered in RESERVED_PUBLIC_PATHS or lowered.startswith("/panel/"):
+        return f"مسیر {label} رزرو شده است و قابل استفاده نیست."
+    return None
+
+
+def normalize_php_version(raw: str) -> str:
+    value = (raw or "").strip()
+    if re.fullmatch(r"\d+\.\d+", value):
+        return value
+    return ""
+
+
+def installed_php_versions() -> list[str]:
+    found = [
+        ver
+        for ver in AVAILABLE_PHP_VERSIONS
+        if Path(f"/usr/sbin/php-fpm{ver}").is_file()
+    ]
+    return found or [DEFAULT_PHP_VERSION]
+
+
+def validate_php_version(version: str) -> str | None:
+    if not version:
+        return "نسخه PHP را انتخاب کنید."
+    if version not in AVAILABLE_PHP_VERSIONS:
+        return f"نسخه PHP {version} پشتیبانی نمی‌شود."
+    if not Path(f"/usr/sbin/php-fpm{version}").is_file():
+        return f"PHP {version} روی این ایمیج نصب نیست."
+    return None
+
+
+def runtime_php_version() -> str:
+    try:
+        proc = subprocess.run(
+            ["php", "-r", "echo PHP_MAJOR_VERSION.'.'.PHP_MINOR_VERSION;"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        ver = normalize_php_version((proc.stdout or "").strip())
+        if ver:
+            return ver
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return DEFAULT_PHP_VERSION
+
+
+def load_panel_settings() -> dict[str, str]:
+    settings = default_panel_settings()
+    try:
+        if PANEL_SETTINGS_PATH.is_file():
+            data = json.loads(PANEL_SETTINGS_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                fb = normalize_public_path(str(data.get("filebrowser_path") or ""))
+                pma = normalize_public_path(str(data.get("phpmyadmin_path") or ""))
+                php_ver = normalize_php_version(str(data.get("php_version") or ""))
+                if fb and validate_public_path(fb, label="FileBrowser") is None:
+                    settings["filebrowser_path"] = fb
+                if pma and validate_public_path(pma, label="phpMyAdmin") is None:
+                    settings["phpmyadmin_path"] = pma
+                if php_ver and validate_php_version(php_ver) is None:
+                    settings["php_version"] = php_ver
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        pass
+    return settings
+
+
+def save_panel_settings(settings: dict[str, str]) -> None:
+    PANEL_SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    merged = load_panel_settings()
+    for key in ("filebrowser_path", "phpmyadmin_path", "php_version"):
+        value = settings.get(key)
+        if value:
+            merged[key] = value
+    payload = {
+        "filebrowser_path": merged["filebrowser_path"],
+        "phpmyadmin_path": merged["phpmyadmin_path"],
+        "php_version": merged["php_version"],
+    }
+    PANEL_SETTINGS_PATH.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    PANEL_PATHS_ENV.write_text(
+        (
+            f"FILEBROWSER_BASEURL={payload['filebrowser_path']}\n"
+            f"PHPMYADMIN_BASEURL={payload['phpmyadmin_path']}\n"
+            f"PHP_VERSION={payload['php_version']}\n"
+        ),
+        encoding="utf-8",
+    )
+
+
+def _apache_regex_escape(path: str) -> str:
+    return re.sub(r"([.^$|?*+(){}\\[\\]])", r"\\\1", path)
+
+
+def write_panel_gate_rewrite(
+    filebrowser_path: str | None = None,
+    phpmyadmin_path: str | None = None,
+) -> None:
+    settings = load_panel_settings()
+    fb = filebrowser_path or settings["filebrowser_path"]
+    pma = phpmyadmin_path or settings["phpmyadmin_path"]
+    fb_re = _apache_regex_escape(fb)
+    pma_re = _apache_regex_escape(pma)
+    token = gate_token()
+    PANEL_GATE_REWRITE.write_text(
+        (
+            "# Auto-generated — requires panel login cookie before tool paths\n"
+            f"RewriteCond %{{REQUEST_URI}} ^({fb_re}|{pma_re})(/|$) [NC]\n"
+            f"RewriteCond %{{HTTP_COOKIE}} !{COOKIE_NAME}={token}\n"
+            "RewriteRule ^ /panel/login?next=%{REQUEST_URI} [R=302,L,QSA]\n"
+        ),
+        encoding="utf-8",
+    )
+
+
+def write_tool_paths_rewrite(filebrowser_path: str, phpmyadmin_path: str) -> None:
+    fb_re = _apache_regex_escape(filebrowser_path)
+    pma_re = _apache_regex_escape(phpmyadmin_path)
+    PANEL_TOOL_PATHS_REWRITE.write_text(
+        (
+            "# Auto-generated — skip WordPress front controller for tool paths\n"
+            f"RewriteRule ^{pma_re} - [L]\n"
+            f"RewriteRule ^{fb_re} - [L]\n"
+        ),
+        encoding="utf-8",
+    )
+
+
+def write_filebrowser_apache_conf(path: str) -> None:
+    FILEBROWSER_APACHE_CONF.write_text(
+        (
+            "# Reverse-proxy FileBrowser on a path (like phpMyAdmin).\n"
+            "# FileBrowser itself listens only on 127.0.0.1:8080 inside the container.\n"
+            "# Regenerated by the admin panel settings.\n"
+            "ProxyPreserveHost On\n"
+            "ProxyRequests Off\n"
+            "\n"
+            f"<Location {path}>\n"
+            f"    ProxyPass http://127.0.0.1:8080{path}\n"
+            f"    ProxyPassReverse http://127.0.0.1:8080{path}\n"
+            "    Require all granted\n"
+            "</Location>\n"
+        ),
+        encoding="utf-8",
+    )
+
+
+def write_phpmyadmin_apache_conf(path: str) -> None:
+    PHPMYADMIN_APACHE_CONF.write_text(
+        (
+            f"Alias {path} /usr/share/phpmyadmin\n"
+            "\n"
+            "<Directory /usr/share/phpmyadmin>\n"
+            "    Options SymLinksIfOwnerMatch\n"
+            "    DirectoryIndex index.php\n"
+            "    AllowOverride All\n"
+            "    Require all granted\n"
+            "</Directory>\n"
+            "\n"
+            "<Directory /usr/share/phpmyadmin/templates>\n"
+            "    Require all denied\n"
+            "</Directory>\n"
+            "<Directory /usr/share/phpmyadmin/libraries>\n"
+            "    Require all denied\n"
+            "</Directory>\n"
+        ),
+        encoding="utf-8",
+    )
+
+
+def sync_filebrowser_baseurl(path: str) -> None:
+    if not FILEBROWSER_DB.is_file():
+        return
+    subprocess.run(
+        [
+            "/usr/local/bin/filebrowser",
+            "config",
+            "set",
+            "--database",
+            str(FILEBROWSER_DB),
+            "--address",
+            "127.0.0.1",
+            "--port",
+            "8080",
+            "--baseurl",
+            path,
+            "--root",
+            "/var/www",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+def apply_php_cli_alternatives(version: str) -> None:
+    php_bin = f"/usr/bin/php{version}"
+    if not Path(php_bin).is_file():
+        return
+    subprocess.run(
+        ["update-alternatives", "--install", "/usr/bin/php", "php", php_bin, "100"],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    subprocess.run(
+        ["update-alternatives", "--set", "php", php_bin],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+def ensure_php_version_applied(
+    version: str | None = None,
+    *,
+    restart_fpm: bool = False,
+) -> str:
+    """Persist selected PHP version, point CLI at it, optionally restart FPM."""
+    current = load_panel_settings()
+    ver = normalize_php_version(version or current.get("php_version") or "")
+    if validate_php_version(ver) is not None:
+        # Fall back to an installed binary (preference may be temporarily unavailable).
+        ver = installed_php_versions()[0]
+    save_panel_settings(
+        {
+            "filebrowser_path": current["filebrowser_path"],
+            "phpmyadmin_path": current["phpmyadmin_path"],
+            "php_version": ver,
+        }
+    )
+    apply_php_cli_alternatives(ver)
+    if restart_fpm:
+        subprocess.run(
+            ["supervisorctl", "restart", "php-fpm"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    return ver
+
+
+def ensure_tool_paths_applied(
+    settings: dict[str, str] | None = None,
+    *,
+    restart_filebrowser: bool = False,
+    reload_apache: bool = False,
+) -> dict[str, str]:
+    """Persist and apply FileBrowser / phpMyAdmin public URL paths."""
+    current = dict(settings or load_panel_settings())
+    fb = current["filebrowser_path"]
+    pma = current["phpmyadmin_path"]
+    php_ver = current.get("php_version") or load_panel_settings()["php_version"]
+    save_panel_settings(
+        {
+            "filebrowser_path": fb,
+            "phpmyadmin_path": pma,
+            "php_version": php_ver,
+        }
+    )
+    write_filebrowser_apache_conf(fb)
+    write_phpmyadmin_apache_conf(pma)
+    write_tool_paths_rewrite(fb, pma)
+    write_panel_gate_rewrite(fb, pma)
+    sync_filebrowser_baseurl(fb)
+
+    if reload_apache:
+        subprocess.run(
+            ["apache2ctl", "graceful"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    if restart_filebrowser:
+        subprocess.run(
+            ["supervisorctl", "restart", "filebrowser"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    return load_panel_settings()
 
 
 def allowed_config_files() -> list[str]:
@@ -393,14 +749,325 @@ def restore_from_archive(upload_path: Path) -> None:
             else:
                 shutil.copy2(child, dest)
 
-        subprocess.run(
-            ["chown", "-R", "www-data:www-data", str(WP_ROOT)],
-            check=False,
-            capture_output=True,
-            timeout=120,
-        )
+        _wp_fix_permissions()
     finally:
         shutil.rmtree(staging, ignore_errors=True)
+
+
+def _version_sort_key(version: str) -> tuple[int, ...]:
+    parts: list[int] = []
+    for piece in version.split("."):
+        try:
+            parts.append(int(piece))
+        except ValueError:
+            parts.append(0)
+    while len(parts) < 3:
+        parts.append(0)
+    return tuple(parts)
+
+
+def wordpress_is_present() -> bool:
+    return (WP_ROOT / "wp-load.php").is_file() or (WP_ROOT / "wp-includes").is_dir()
+
+
+def current_wordpress_version() -> str | None:
+    if not wordpress_is_present():
+        return None
+    try:
+        proc = subprocess.run(
+            ["wp", "core", "version", f"--path={WP_ROOT}", "--allow-root"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if proc.returncode == 0:
+            ver = (proc.stdout or "").strip()
+            if ver:
+                return ver
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    version_php = WP_ROOT / "wp-includes" / "version.php"
+    if version_php.is_file():
+        try:
+            text = version_php.read_text(encoding="utf-8", errors="replace")
+            match = re.search(r"\$wp_version\s*=\s*'([^']+)'", text)
+            if match:
+                return match.group(1)
+        except OSError:
+            pass
+    return None
+
+
+def fetch_wordpress_versions() -> list[dict[str, str]]:
+    """List official WordPress releases from wordpress.org stable-check API."""
+    req = urllib.request.Request(
+        WP_VERSIONS_API,
+        headers={"User-Agent": "wp-aio-panel/1.0", "Accept": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=45) as resp:
+        raw = resp.read().decode("utf-8", errors="replace")
+    data = json.loads(raw)
+    if not isinstance(data, dict):
+        raise RuntimeError("پاسخ نامعتبر از API نسخه‌های وردپرس")
+    items: list[dict[str, str]] = []
+    for version, status in data.items():
+        if not isinstance(version, str) or not WP_VERSION_RE.match(version):
+            continue
+        st = str(status) if status is not None else "outdated"
+        items.append({"version": version, "status": st})
+    items.sort(key=lambda x: _version_sort_key(x["version"]), reverse=True)
+    return items
+
+
+def _wp_fix_permissions() -> None:
+    """Make /var/www/html owned/writable by www-data (PHP-FPM + FileBrowser)."""
+    WP_ROOT.mkdir(parents=True, exist_ok=True)
+    # PHP move_uploaded_file source dir (must exist before FPM handles uploads)
+    php_tmp = Path("/tmp/php-uploads")
+    php_tmp.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["chmod", "1777", "/tmp", str(php_tmp)], check=False, capture_output=True, timeout=30)
+    subprocess.run(
+        ["chown", "www-data:www-data", str(php_tmp)],
+        check=False,
+        capture_output=True,
+        timeout=30,
+    )
+
+    content = WP_ROOT / "wp-content"
+    if (WP_ROOT / "wp-load.php").is_file() or (WP_ROOT / "wp-includes").is_dir():
+        for sub in ("uploads", "plugins", "themes", "upgrade", "cache", "mu-plugins"):
+            (content / sub).mkdir(parents=True, exist_ok=True)
+        (content / "upgrade" / "temp").mkdir(parents=True, exist_ok=True)
+        y_m = datetime.now(timezone.utc).strftime("%Y/%m")
+        (content / "uploads" / y_m).mkdir(parents=True, exist_ok=True)
+
+    subprocess.run(
+        ["chown", "-R", "www-data:www-data", "/var/www"],
+        check=False,
+        capture_output=True,
+        timeout=180,
+    )
+    subprocess.run(
+        ["find", str(WP_ROOT), "-type", "d", "-exec", "chmod", "755", "{}", "+"],
+        check=False,
+        capture_output=True,
+        timeout=180,
+    )
+    subprocess.run(
+        ["find", str(WP_ROOT), "-type", "f", "-exec", "chmod", "644", "{}", "+"],
+        check=False,
+        capture_output=True,
+        timeout=180,
+    )
+    if content.is_dir():
+        subprocess.run(
+            ["find", str(content), "-type", "d", "-exec", "chmod", "2775", "{}", "+"],
+            check=False,
+            capture_output=True,
+            timeout=180,
+        )
+        subprocess.run(
+            ["find", str(content), "-type", "f", "-exec", "chmod", "664", "{}", "+"],
+            check=False,
+            capture_output=True,
+            timeout=180,
+        )
+        for writable in ("uploads", "plugins", "themes", "upgrade", "cache"):
+            target = content / writable
+            if target.is_dir():
+                subprocess.run(
+                    ["chmod", "-R", "u+rwX,g+rwX", str(target)],
+                    check=False,
+                    capture_output=True,
+                    timeout=180,
+                )
+    cfg = WP_ROOT / "wp-config.php"
+    if cfg.is_file():
+        subprocess.run(
+            ["chown", "www-data:www-data", str(cfg)],
+            check=False,
+            capture_output=True,
+            timeout=30,
+        )
+        subprocess.run(
+            ["chmod", "640", str(cfg)],
+            check=False,
+            capture_output=True,
+            timeout=30,
+        )
+
+
+def _wp_chown() -> None:
+    """Backward-compatible alias used by install/restore paths."""
+    _wp_fix_permissions()
+
+
+def ensure_wordpress_htaccess_file() -> None:
+    WP_ROOT.mkdir(parents=True, exist_ok=True)
+    dest = WP_ROOT / ".htaccess"
+    if WP_HTACCESS_SRC.is_file():
+        shutil.copy2(WP_HTACCESS_SRC, dest)
+    elif not dest.is_file():
+        dest.write_text(
+            "# BEGIN WordPress\n"
+            "<IfModule mod_rewrite.c>\n"
+            "RewriteEngine On\n"
+            "RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]\n"
+            "RewriteBase /\n"
+            "RewriteRule ^index\\.php$ - [L]\n"
+            "RewriteCond %{REQUEST_FILENAME} !-f\n"
+            "RewriteCond %{REQUEST_FILENAME} !-d\n"
+            "RewriteRule . /index.php [L]\n"
+            "</IfModule>\n"
+            "# END WordPress\n",
+            encoding="utf-8",
+        )
+
+
+def _inject_wp_config_block(text: str, marker: str, block: str) -> str:
+    """Insert a marked block before wp-settings.php when missing."""
+    if marker in text:
+        return text
+    needle = "require_once ABSPATH . 'wp-settings.php';"
+    if needle in text:
+        return text.replace(needle, block + needle, 1)
+    return text + block
+
+
+def ensure_wordpress_config() -> None:
+    """Create wp-config.php from env DB settings when missing; patch SSL/proxy."""
+    cfg = WP_ROOT / "wp-config.php"
+    if not cfg.is_file():
+        db = db_settings()
+        if not (WP_ROOT / "wp-config-sample.php").is_file():
+            raise RuntimeError("wp-config-sample.php بعد از دانلود پیدا نشد.")
+        cmd = [
+            "wp",
+            "config",
+            "create",
+            f"--dbname={db['name']}",
+            f"--dbuser={db['user']}",
+            f"--dbpass={db['pass']}",
+            "--dbhost=localhost",
+            f"--path={WP_ROOT}",
+            "--allow-root",
+            "--skip-check",
+        ]
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        if proc.returncode != 0 or not cfg.is_file():
+            err = ((proc.stderr or "") + (proc.stdout or "")).strip()
+            raise RuntimeError(err or "ساخت wp-config.php ناموفق بود.")
+
+    # Performance / cron offload + reverse-proxy HTTPS — same intent as init.sh
+    text = cfg.read_text(encoding="utf-8", errors="replace")
+    original = text
+    text = _inject_wp_config_block(
+        text,
+        "WP_PERF_TUNING",
+        (
+            "\n/* WP_PERF_TUNING */\n"
+            "define('WP_MEMORY_LIMIT', '128M');\n"
+            "define('WP_MAX_MEMORY_LIMIT', '256M');\n"
+            "define('WP_POST_REVISIONS', 5);\n"
+            "define('EMPTY_TRASH_DAYS', 7);\n"
+            "define('AUTOSAVE_INTERVAL', 120);\n"
+            "define('WP_CRON_LOCK_TIMEOUT', 60);\n"
+            "define('DISABLE_WP_CRON', true);\n"
+            "define('CONCATENATE_SCRIPTS', true);\n"
+            "define('DISALLOW_FILE_EDIT', true);\n"
+            "/* END WP_PERF_TUNING */\n\n"
+        ),
+    )
+    text = _inject_wp_config_block(
+        text,
+        "WP_REVERSE_PROXY_SSL",
+        (
+            "\n/* WP_REVERSE_PROXY_SSL */\n"
+            "if (\n"
+            "    (!empty($_SERVER['HTTP_X_FORWARDED_PROTO']) && "
+            "strtolower(trim(explode(',', (string) $_SERVER['HTTP_X_FORWARDED_PROTO'])[0])) === 'https')\n"
+            "    || (!empty($_SERVER['HTTP_X_FORWARDED_SSL']) && "
+            "strtolower((string) $_SERVER['HTTP_X_FORWARDED_SSL']) === 'on')\n"
+            ") {\n"
+            "    $_SERVER['HTTPS'] = 'on';\n"
+            "}\n"
+            "/* END WP_REVERSE_PROXY_SSL */\n\n"
+        ),
+    )
+    text = _inject_wp_config_block(
+        text,
+        "FS_METHOD",
+        (
+            "\n/* WP_FS_DIRECT */\n"
+            "define('FS_METHOD', 'direct');\n"
+            "define('FS_CHMOD_DIR', 0775);\n"
+            "define('FS_CHMOD_FILE', 0664);\n"
+            "/* END WP_FS_DIRECT */\n\n"
+        ),
+    )
+    # Older installs may already have FS_METHOD without chmod constants.
+    text = _inject_wp_config_block(
+        text,
+        "FS_CHMOD_DIR",
+        (
+            "\n/* WP_FS_CHMOD */\n"
+            "define('FS_CHMOD_DIR', 0775);\n"
+            "define('FS_CHMOD_FILE', 0664);\n"
+            "/* END WP_FS_CHMOD */\n\n"
+        ),
+    )
+    if text != original:
+        cfg.write_text(text, encoding="utf-8")
+
+
+def install_wordpress(version: str, preserve_content: bool) -> str:
+    """Download and extract WordPress core via WP-CLI into WP_ROOT."""
+    version = (version or "").strip()
+    if not WP_VERSION_RE.match(version):
+        raise ValueError("نسخهٔ انتخاب‌شده معتبر نیست.")
+
+    WP_ROOT.mkdir(parents=True, exist_ok=True)
+    present = wordpress_is_present()
+    cmd = [
+        "wp",
+        "core",
+        "download",
+        f"--version={version}",
+        f"--path={WP_ROOT}",
+        "--allow-root",
+    ]
+    if present:
+        cmd.append("--force")
+        if preserve_content:
+            cmd.append("--skip-content")
+
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=WP_INSTALL_TIMEOUT,
+        check=False,
+    )
+    out = ((proc.stdout or "") + (proc.stderr or "")).strip()
+    if proc.returncode != 0:
+        raise RuntimeError(out or f"wp core download exit {proc.returncode}")
+
+    # Remove placeholder index left by the image when no WP was installed
+    placeholder = WP_ROOT / "index.html"
+    if placeholder.is_file() and (WP_ROOT / "wp-load.php").is_file():
+        placeholder.unlink(missing_ok=True)
+
+    ensure_wordpress_config()
+    ensure_wordpress_htaccess_file()
+    _wp_chown()
+    return out or f"WordPress {version} نصب شد."
 
 
 @app.context_processor
@@ -456,13 +1123,80 @@ def logout():
 @login_required
 def dashboard():
     host = request.host_url.rstrip("/")
+    settings = load_panel_settings()
     return set_gate_cookie(
         app.make_response(
             render_template(
                 "dashboard.html",
-                filebrowser_url=f"{host}/filebrowser",
-                phpmyadmin_url=f"{host}/phpmyadmin",
+                filebrowser_url=f"{host}{settings['filebrowser_path']}",
+                phpmyadmin_url=f"{host}{settings['phpmyadmin_path']}",
                 files=allowed_config_files(),
+            )
+        )
+    )
+
+
+@app.route("/panel/settings", methods=["GET", "POST"])
+@login_required
+def settings():
+    message = None
+    err = None
+    current = load_panel_settings()
+    php_choices = installed_php_versions()
+
+    if request.method == "POST":
+        fb = normalize_public_path(request.form.get("filebrowser_path") or "")
+        pma = normalize_public_path(request.form.get("phpmyadmin_path") or "")
+        php_ver = normalize_php_version(request.form.get("php_version") or "")
+        err = validate_public_path(fb, label="FileBrowser") or validate_public_path(
+            pma, label="phpMyAdmin"
+        )
+        if not err and fb.lower() == pma.lower():
+            err = "مسیر FileBrowser و phpMyAdmin نباید یکسان باشند."
+        if not err:
+            err = validate_php_version(php_ver)
+        if err:
+            current = {
+                "filebrowser_path": fb or current["filebrowser_path"],
+                "phpmyadmin_path": pma or current["phpmyadmin_path"],
+                "php_version": php_ver or current["php_version"],
+            }
+        else:
+            try:
+                previous_php = current.get("php_version") or DEFAULT_PHP_VERSION
+                current = ensure_tool_paths_applied(
+                    {
+                        "filebrowser_path": fb,
+                        "phpmyadmin_path": pma,
+                        "php_version": php_ver,
+                    },
+                    restart_filebrowser=True,
+                    reload_apache=True,
+                )
+                applied_php = ensure_php_version_applied(
+                    php_ver,
+                    restart_fpm=(php_ver != previous_php),
+                )
+                current = load_panel_settings()
+                message = (
+                    "تنظیمات ذخیره شد. "
+                    f"FileBrowser: {fb} — phpMyAdmin: {pma} — PHP: {applied_php}"
+                )
+                if php_ver != previous_php:
+                    message += " (PHP-FPM ری‌استارت شد)"
+            except Exception as exc:  # noqa: BLE001
+                err = f"اعمال تنظیمات ناموفق بود: {exc}"
+
+    return set_gate_cookie(
+        app.make_response(
+            render_template(
+                "settings.html",
+                settings=current,
+                defaults=default_panel_settings(),
+                php_versions=php_choices,
+                runtime_php=runtime_php_version(),
+                message=message,
+                error=err,
             )
         )
     )
@@ -556,6 +1290,60 @@ def monitor():
 @login_required
 def api_stats():
     return jsonify(collect_system_stats())
+
+
+@app.route("/panel/wordpress", methods=["GET", "POST"])
+@login_required
+def wordpress():
+    message = None
+    err = None
+    versions: list[dict[str, str]] = []
+    versions_error = None
+    current = current_wordpress_version()
+    present = wordpress_is_present()
+
+    try:
+        versions = fetch_wordpress_versions()
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError, RuntimeError) as exc:
+        versions_error = f"دریافت فهرست نسخه‌ها ناموفق بود: {exc}"
+    except Exception as exc:  # noqa: BLE001
+        versions_error = f"دریافت فهرست نسخه‌ها ناموفق بود: {exc}"
+
+    if request.method == "POST":
+        action = request.form.get("action") or ""
+        if action == "install":
+            version = (request.form.get("version") or "").strip()
+            preserve = request.form.get("preserve_content") == "1"
+            allowed = {v["version"] for v in versions} if versions else set()
+            if versions and version not in allowed:
+                err = "نسخه در فهرست رسمی وردپرس نیست."
+            else:
+                try:
+                    detail = install_wordpress(version, preserve_content=preserve)
+                    current = current_wordpress_version()
+                    present = wordpress_is_present()
+                    message = (
+                        f"وردپرس {version} با موفقیت نصب شد."
+                        + (f" ({detail[:200]})" if detail else "")
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    err = f"نصب ناموفق: {exc}"
+        else:
+            err = "عملیات نامعتبر."
+
+    return set_gate_cookie(
+        app.make_response(
+            render_template(
+                "wordpress.html",
+                versions=versions,
+                versions_error=versions_error,
+                current_version=current,
+                wordpress_present=present,
+                message=message,
+                error=err,
+            )
+        )
+    )
 
 
 def run_shell_command(command: str) -> dict:

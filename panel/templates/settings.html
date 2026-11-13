@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}تنظیمات پنل — پنل مدیریت{% endblock %}
+{% block topbar_title %}تنظیمات پنل{% endblock %}
+{% block body %}
+<p class="muted page-lead">مسیر ابزارها و نسخهٔ PHP را اینجا تغییر دهید. مقادیر روی volume می‌مانند و با <code class="ltr">docker compose down/up</code> برنمی‌گردند.</p>
+
+{% if message %}<div class="alert ok">{{ message }}</div>{% endif %}
+{% if error %}<div class="alert err">{{ error }}</div>{% endif %}
+
+<form method="post" class="settings-form" id="panel-settings-form">
+  <div class="tile settings-tile" style="margin-top:1.25rem">
+    <h2>مسیر ابزارها</h2>
+    <p>بعد از ذخیره، Apache و FileBrowser به‌روز می‌شوند. برای دسترسی باید وارد پنل باشید (همان گیت قبلی).</p>
+
+    <label for="filebrowser_path">مسیر FileBrowser</label>
+    <input
+      type="text"
+      id="filebrowser_path"
+      name="filebrowser_path"
+      value="{{ settings.filebrowser_path }}"
+      placeholder="{{ defaults.filebrowser_path }}"
+      autocomplete="off"
+      spellcheck="false"
+      required
+    >
+    <p class="field-hint">پیش‌فرض: <code class="ltr">{{ defaults.filebrowser_path }}</code></p>
+
+    <label for="phpmyadmin_path">مسیر phpMyAdmin</label>
+    <input
+      type="text"
+      id="phpmyadmin_path"
+      name="phpmyadmin_path"
+      value="{{ settings.phpmyadmin_path }}"
+      placeholder="{{ defaults.phpmyadmin_path }}"
+      autocomplete="off"
+      spellcheck="false"
+      required
+    >
+    <p class="field-hint">پیش‌فرض: <code class="ltr">{{ defaults.phpmyadmin_path }}</code></p>
+
+    <p class="muted">مثال: <code class="ltr">/fm</code> یا <code class="ltr">/db-admin</code>. مسیرهای <code class="ltr">/panel</code> و هستهٔ وردپرس رزرواند.</p>
+  </div>
+
+  <div class="tile settings-tile" style="margin-top:1.25rem">
+    <h2>نسخهٔ PHP</h2>
+    <p>نسخهٔ انتخاب‌شده برای PHP-FPM و CLI استفاده می‌شود. پیش‌فرض ایمیج <code class="ltr">{{ defaults.php_version }}</code> است{% if runtime_php %}؛ الان در حال اجرا: <code class="ltr">{{ runtime_php }}</code>{% endif %}.</p>
+
+    <label for="php_version">PHP</label>
+    <div class="custom-select" data-custom-select>
+      <select id="php_version" name="php_version" required>
+        {% for ver in php_versions %}
+        <option value="{{ ver }}" {% if settings.php_version == ver %}selected{% endif %}>PHP {{ ver }}{% if ver == defaults.php_version %} (پیش‌فرض){% endif %}</option>
+        {% endfor %}
+      </select>
+      <button type="button" class="cs-trigger" aria-haspopup="listbox" aria-expanded="false">
+        <span class="cs-label">PHP {{ settings.php_version }}</span>
+        <span class="cs-caret" aria-hidden="true"></span>
+      </button>
+      <ul class="cs-list" role="listbox"></ul>
+    </div>
+    <p class="field-hint">تغییر نسخه PHP-FPM را ری‌استارت می‌کند؛ سایت چند ثانیه قطع می‌شود.</p>
+  </div>
+
+  <div class="row-actions" style="margin-top:1.25rem">
+    <button class="btn" type="submit">ذخیره و اعمال</button>
+    <button class="btn secondary" type="button" id="reset-defaults">بازگشت به پیش‌فرض</button>
+  </div>
+</form>
+{% endblock %}
+{% block scripts %}
+<script>
+(function () {
+  var btn = document.getElementById("reset-defaults");
+  var fb = document.getElementById("filebrowser_path");
+  var pma = document.getElementById("phpmyadmin_path");
+  var php = document.getElementById("php_version");
+  if (!btn || !fb || !pma || !php) return;
+  btn.addEventListener("click", function () {
+    fb.value = {{ defaults.filebrowser_path|tojson }};
+    pma.value = {{ defaults.phpmyadmin_path|tojson }};
+    php.value = {{ defaults.php_version|tojson }};
+    php.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+})();
+</script>
+{% endblock %}

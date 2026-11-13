@@ -6,6 +6,11 @@
 
 <div class="grid" style="margin-top:1.25rem">
   <div class="tile">
+    <h2>نصب وردپرس</h2>
+    <p>مشاهدهٔ نسخه‌ها و نصب هستهٔ وردپرس روی مسیر سایت</p>
+    <a class="btn" href="{{ url_for('wordpress') }}">رفتن به نصب وردپرس</a>
+  </div>
+  <div class="tile">
     <h2>مانیتور منابع</h2>
     <p>مصرف CPU، حافظه، دیسک و بار سیستم به‌صورت زنده</p>
     <a class="btn" href="{{ url_for('monitor') }}">باز کردن مانیتور</a>
@@ -34,6 +39,11 @@
     <h2>کنسول</h2>
     <p>ترمینال تعاملی داخل همین کانتینر</p>
     <a class="btn" href="{{ url_for('shell') }}">باز کردن کنسول</a>
+  </div>
+  <div class="tile">
+    <h2>تنظیمات پنل</h2>
+    <p>تغییر مسیر FileBrowser و phpMyAdmin</p>
+    <a class="btn" href="{{ url_for('settings') }}">رفتن به تنظیمات پنل</a>
   </div>
 </div>
 

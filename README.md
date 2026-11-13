@@ -13,8 +13,9 @@ Use this when you want WordPress up quickly without installing PHP, MySQL, and A
 | **WordPress** | CMS / website | `http://<domain>/` |
 | **Apache** | Web server | Port `80` inside the container |
 | **MariaDB** | Database | Only inside the container (`localhost:3306`); manage via phpMyAdmin |
-| **phpMyAdmin** | Manage MariaDB in the browser | `http://<domain>/phpmyadmin` |
-| **FileBrowser** | Edit any file in the container (root `/`) | `http://<domain>/filebrowser` |
+| **phpMyAdmin** | Manage MariaDB in the browser | Default `http://<domain>/phpmyadmin` (path configurable in `/panel/settings`) |
+| **FileBrowser** | Web files under `/var/www` | Default `http://<domain>/filebrowser` (path configurable in `/panel/settings`) |
+| **Admin panel** | Login gate, WordPress install, backups, settings | `http://<domain>/panel` |
 | **WP-CLI** | WordPress command line | `docker exec -it <container> wp ...` |
 | **ionCube Loader** | Run ionCube-encoded PHP plugins/themes | Enabled in PHP automatically |
 
@@ -52,7 +53,7 @@ FileBrowser URL        : http://example.com/filebrowser
 Credentials page       : http://example.com/<random>.html
 ```
 
-Point your edge/proxy at the Docker HTTP port. MariaDB is not published on the host—use phpMyAdmin. The credentials HTML is created on first container boot under a random filename.
+Point your edge/proxy at the Docker HTTP port. The edge must send `X-Forwarded-Proto: https` so WordPress generates `https://` asset URLs (avoids mixed-content). MariaDB is not published on the host—use phpMyAdmin. The credentials HTML is created on first container boot under a random filename.
 ---
 
 ## Manual install (clone repo)
@@ -61,7 +62,7 @@ Point your edge/proxy at the Docker HTTP port. MariaDB is not published on the h
 
 - Docker and Docker Compose
 - Files in this repo used at build time:
-  - `wordpress-6.9.4.tar.gz`
+  - `wordpress/.htaccess` (default permalink rules; core is installed later from the panel)
   - `filebrowser/linux-amd64-filebrowser.tar.gz`
   - `phpmyadmin/phpMyAdmin-5.2.3-all-languages.tar.gz`
   - `ioncube/` loader `.so` files for your PHP version
@@ -113,11 +114,12 @@ Copy `.env.example` to `.env` and set values there. Compose loads `.env` for int
 
 ### WordPress
 
-Open the HTTP port in your browser and complete the WordPress installation wizard. The database is already configured in `wp-config.php`.
+1. Open `/panel/wordpress`, pick a version from the list, and install the core.
+2. Then open the site URL and complete the WordPress installation wizard. The database credentials are written into `wp-config.php` during install (from env).
 
 ### phpMyAdmin
 
-URL: `http://<domain>/phpmyadmin`
+Default URL: `http://<domain>/phpmyadmin` (change the path under **تنظیمات پنل** / `/panel/settings`).
 
 Sign in with either:
 
@@ -126,9 +128,18 @@ Sign in with either:
 
 ### FileBrowser
 
-URL: `http://<domain>/filebrowser`
+Default URL: `http://<domain>/filebrowser` (same settings page can change this path).
 
-Use `FILEBROWSER_USER` / `FILEBROWSER_PASS`. Root directory is `/` (full container filesystem), so you can edit WordPress under `/var/www/html` and PHP settings under `/etc/php/<ver>/`. This stack uses **PHP-FPM**; the active ini is `/etc/php/<ver>/fpm/php.ini` (an `apache2/php.ini` is also kept writable for convenience). Restart PHP-FPM after ini changes (`supervisorctl restart php-fpm` inside the container). FileBrowser runs as root on localhost and is reverse-proxied by Apache.
+Use `FILEBROWSER_USER` / `FILEBROWSER_PASS`. Root directory is `/var/www` (WordPress under `html/`). This stack uses **PHP-FPM**; the active ini is `/etc/php/<ver>/fpm/php.ini`. Restart PHP-FPM after ini changes (`supervisorctl restart php-fpm` inside the container). FileBrowser runs as `www-data` on localhost and is reverse-proxied by Apache.
+
+### Panel settings
+
+`/panel/settings` lets you change:
+
+- Public URL paths for FileBrowser and phpMyAdmin (defaults `/filebrowser`, `/phpmyadmin`)
+- Active **PHP version** (shipped: 8.1 / 8.2 / 8.3 / 8.4; image default **8.1**)
+
+Settings are stored on the `filebrowser_cfg` volume (`/config/panel-settings.json` + `panel-paths.env`) and re-applied on every container start, so `docker compose down` / `up` keeps your chosen PHP version and paths.
 
 ### WP-CLI
 
@@ -149,7 +160,7 @@ Docker volumes keep data across restarts:
 | `wp_html` | WordPress files (`/var/www/html`) |
 | `wp_db` | MariaDB data (`/var/lib/mysql`) |
 | `filebrowser_db` | FileBrowser database |
-| `filebrowser_cfg` | FileBrowser config |
+| `filebrowser_cfg` | FileBrowser + panel settings (`/config`, incl. PHP version) |
 
 Removing volumes deletes your site and database:
 
@@ -165,7 +176,7 @@ docker compose down -v   # destructive
 docker build -t gitea.tmayt.ir/thaiostream/wp .
 ```
 
-The image is based on Ubuntu 22.04, uses the Arvan Cloud apt mirror, and bundles offline archives from `wordpress/`, `filebrowser/`, and `phpmyadmin/` so the build does not need to download them from the internet (except WP-CLI during build).
+The image is based on Ubuntu 22.04, uses the Arvan Cloud apt mirror, and bundles offline archives from `filebrowser/` and `phpmyadmin/` so the build does not need those downloads. WordPress core is **not** baked into the image; install a chosen version from `/panel/wordpress` (needs outbound access to wordpress.org at install time). WP-CLI is still fetched during the image build.
 
 ---
 
@@ -179,7 +190,7 @@ The image is based on Ubuntu 22.04, uses the Arvan Cloud apt mirror, and bundles
 ├── install.sh              # Generates docker-compose with random ports/passwords
 ├── supervisord.conf        # Runs Apache, MariaDB, FileBrowser, init
 ├── apache/                 # Apache VirtualHost (WordPress permalinks)
-├── wordpress-*.tar.gz      # WordPress source (bundled)
+├── panel/                  # Admin panel (includes WordPress version installer)
 ├── wordpress/.htaccess     # Default pretty-permalink rewrite rules
 ├── filebrowser/            # FileBrowser binary + install script
 ├── phpmyadmin/             # phpMyAdmin archive + Apache config

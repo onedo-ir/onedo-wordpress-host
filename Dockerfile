@@ -8,12 +8,20 @@ RUN echo "deb http://mirror.arvancloud.ir/ubuntu/ jammy main restricted universe
  && echo "deb http://mirror.arvancloud.ir/ubuntu/ jammy-backports main restricted universe multiverse" >> /etc/apt/sources.list \
  && echo "deb http://mirror.arvancloud.ir/ubuntu/ jammy-security main restricted universe multiverse" >> /etc/apt/sources.list
 
-# ===== Install all services (PHP-FPM instead of mod_php) =====
+# ===== Install all services (multi PHP-FPM via ondrej; panel can switch) =====
+ENV DEFAULT_PHP_VERSION=8.1
+ENV PHP_VERSIONS="8.1 8.2 8.3 8.4"
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl gnupg software-properties-common \
+    && add-apt-repository -y ppa:ondrej/php \
+    && apt-get update && apt-get install -y --no-install-recommends \
     apache2 mariadb-server \
-    php php-fpm php-mysql php-cli php-curl php-xml php-mbstring php-zip php-gd php-opcache \
+    php8.1-fpm php8.1-cli php8.1-mysql php8.1-curl php8.1-xml php8.1-mbstring php8.1-zip php8.1-gd php8.1-opcache \
+    php8.2-fpm php8.2-cli php8.2-mysql php8.2-curl php8.2-xml php8.2-mbstring php8.2-zip php8.2-gd php8.2-opcache \
+    php8.3-fpm php8.3-cli php8.3-mysql php8.3-curl php8.3-xml php8.3-mbstring php8.3-zip php8.3-gd php8.3-opcache \
+    php8.4-fpm php8.4-cli php8.4-mysql php8.4-curl php8.4-xml php8.4-mbstring php8.4-zip php8.4-gd php8.4-opcache \
     python3 python3-flask python3-gunicorn \
-    wget curl unzip tar openssl supervisor ca-certificates \
+    wget unzip tar openssl supervisor \
     && rm -rf /var/lib/apt/lists/*
 
 # ===== Apache: event MPM + FPM + compression/cache =====
@@ -28,6 +36,7 @@ RUN set -eux; \
     a2dismod php8.1 2>/dev/null || true; \
     a2dismod php8.2 2>/dev/null || true; \
     a2dismod php8.3 2>/dev/null || true; \
+    a2dismod php8.4 2>/dev/null || true; \
     a2dismod mpm_prefork; \
     a2enmod mpm_event; \
     a2enmod rewrite proxy proxy_http proxy_fcgi setenvif headers deflate expires reqtimeout; \
@@ -41,33 +50,15 @@ RUN set -eux; \
     a2ensite 000-default.conf; \
     sed -i 's|^ErrorLog .*|ErrorLog ${APACHE_LOG_DIR}/error.log|' /etc/apache2/apache2.conf
 
-# ===== PHP performance (OPcache + runtime) =====
+# ===== PHP performance + ionCube for every shipped version =====
 COPY performance/php-performance.ini /tmp/php-performance.ini
 COPY performance/php-opcache.ini /tmp/php-opcache.ini
 COPY performance/php-fpm-pool.conf /tmp/php-fpm-pool.conf
 COPY performance/php-fpm-start.sh /usr/local/bin/php-fpm-start.sh
-RUN set -eux; \
-    PHP_VER="$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')"; \
-    cp /tmp/php-performance.ini "/etc/php/${PHP_VER}/fpm/conf.d/99-performance.ini"; \
-    cp /tmp/php-performance.ini "/etc/php/${PHP_VER}/cli/conf.d/99-performance.ini"; \
-    cp /tmp/php-opcache.ini "/etc/php/${PHP_VER}/fpm/conf.d/10-opcache-tune.ini"; \
-    cp /tmp/php-opcache.ini "/etc/php/${PHP_VER}/cli/conf.d/10-opcache-tune.ini"; \
-    cp /tmp/php-fpm-pool.conf "/etc/php/${PHP_VER}/fpm/pool.d/www.conf"; \
-    chmod +x /usr/local/bin/php-fpm-start.sh; \
-    mkdir -p /run/php; \
-    # Ensure apache2/cli/fpm php.ini trees exist and are writable via FileBrowser (root)
-    for sapi in fpm cli apache2; do \
-      mkdir -p "/etc/php/${PHP_VER}/${sapi}/conf.d"; \
-      if [ ! -f "/etc/php/${PHP_VER}/${sapi}/php.ini" ]; then \
-        if [ -f "/etc/php/${PHP_VER}/fpm/php.ini" ]; then \
-          cp "/etc/php/${PHP_VER}/fpm/php.ini" "/etc/php/${PHP_VER}/${sapi}/php.ini"; \
-        elif [ -f "/etc/php/${PHP_VER}/cli/php.ini" ]; then \
-          cp "/etc/php/${PHP_VER}/cli/php.ini" "/etc/php/${PHP_VER}/${sapi}/php.ini"; \
-        fi; \
-      fi; \
-    done; \
-    find "/etc/php/${PHP_VER}" -type f -name '*.ini' -exec chmod 664 {} +; \
-    find "/etc/php/${PHP_VER}" -type d -exec chmod 755 {} +
+COPY performance/configure-php-versions.sh /usr/local/bin/configure-php-versions.sh
+COPY ioncube /ioncube
+RUN chmod +x /usr/local/bin/php-fpm-start.sh /usr/local/bin/configure-php-versions.sh \
+ && /usr/local/bin/configure-php-versions.sh
 
 # ===== MariaDB low-memory tuning =====
 COPY performance/mariadb.cnf /etc/mysql/mariadb.conf.d/99-performance.cnf
@@ -86,17 +77,19 @@ RUN chmod +x /filebrowser/get.sh \
  && cp /filebrowser/apache-filebrowser.conf /etc/apache2/conf-available/filebrowser.conf \
  && a2enconf filebrowser
 
-# ===== WordPress =====
-COPY wordpress-6.9.4.tar.gz /tmp/latest.tar.gz
-COPY wordpress/.htaccess /tmp/wordpress.htaccess
-RUN cd /tmp \
- && tar -xzf latest.tar.gz \
- && mv wordpress/* /var/www/html/ \
- && rm -f /var/www/html/index.html \
- && cp /tmp/wordpress.htaccess /var/www/html/.htaccess
-
-# ===== Permissions =====
-RUN chown -R www-data:www-data /var/www/html
+# ===== WordPress docroot (core installed via /panel/wordpress) =====
+COPY wordpress/.htaccess /opt/wordpress.htaccess
+RUN mkdir -p /var/www/html \
+ && printf '%s\n' \
+      '<!DOCTYPE html><html lang="fa" dir="rtl"><head><meta charset="utf-8">' \
+      '<meta name="viewport" content="width=device-width,initial-scale=1">' \
+      '<title>وردپرس نصب نشده</title></head><body style="font-family:sans-serif;padding:2rem;text-align:center">' \
+      '<h1>وردپرس هنوز نصب نشده</h1>' \
+      '<p>از <a href="/panel/wordpress">پنل مدیریت ← نصب وردپرس</a> نسخه را انتخاب و نصب کنید.</p>' \
+      '</body></html>' \
+      > /var/www/html/index.html \
+ && chown -R www-data:www-data /var/www \
+ && chmod 644 /opt/wordpress.htaccess
 
 # ===== Admin panel (/panel) =====
 COPY panel /opt/panel
@@ -118,31 +111,6 @@ RUN chmod +x /init.sh
 # ===== Container entry (writes panel gate, then supervisord) =====
 COPY container-start.sh /usr/local/bin/container-start.sh
 RUN chmod +x /usr/local/bin/container-start.sh
-
-# ===== IonCube Loader =====
-COPY ioncube /ioncube
-
-RUN set -eux; \
-    PHP_MAJOR=$(php -r "echo PHP_MAJOR_VERSION;"); \
-    PHP_MINOR=$(php -r "echo PHP_MINOR_VERSION;"); \
-    EXT_DIR=$(php -i | awk -F'=> ' '/extension_dir/ {print $2}' | head -n1 | tr -d ' '); \
-    echo "PHP: ${PHP_MAJOR}.${PHP_MINOR} EXT: ${EXT_DIR}"; \
-    if [ -f "/ioncube/ioncube_loader_lin_${PHP_MAJOR}.${PHP_MINOR}.so" ]; then \
-        IONCUBE="/ioncube/ioncube_loader_lin_${PHP_MAJOR}.${PHP_MINOR}.so"; \
-    elif [ -f "/ioncube/ioncube_loader_lin_${PHP_MAJOR}.${PHP_MINOR}_ts.so" ]; then \
-        IONCUBE="/ioncube/ioncube_loader_lin_${PHP_MAJOR}.${PHP_MINOR}_ts.so"; \
-    else \
-        echo "❌ No matching ionCube loader found"; \
-        ls /ioncube; \
-        exit 1; \
-    fi; \
-    cp "$IONCUBE" "$EXT_DIR/"; \
-    for sapi in apache2 cli fpm; do \
-        confdir="/etc/php/${PHP_MAJOR}.${PHP_MINOR}/${sapi}/conf.d"; \
-        if [ -d "$confdir" ]; then \
-            echo "zend_extension=$EXT_DIR/$(basename $IONCUBE)" > "$confdir/00-ioncube.ini"; \
-        fi; \
-    done
 
 # ===== WP-CLI =====
 RUN curl -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar \
