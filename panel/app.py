@@ -108,6 +108,16 @@ def panel_pass() -> str:
     return os.environ.get("PANEL_PASS", "")
 
 
+def secure_str_eq(a: str, b: str) -> bool:
+    """Constant-time string compare; supports non-ASCII (hmac.compare_digest on str does not)."""
+    ba = a.encode("utf-8")
+    bb = b.encode("utf-8")
+    if len(ba) != len(bb):
+        hmac.compare_digest(ba, ba)
+        return False
+    return hmac.compare_digest(ba, bb)
+
+
 def gate_token() -> str:
     """Cookie value Apache checks before allowing tool paths (FileBrowser / phpMyAdmin)."""
     explicit = os.environ.get("PANEL_GATE_TOKEN", "").strip()
@@ -1110,8 +1120,9 @@ def login():
     if request.method == "POST":
         user = (request.form.get("username") or "").strip()
         password = request.form.get("password") or ""
-        ok_user = hmac.compare_digest(user, panel_user())
-        ok_pass = hmac.compare_digest(password, panel_pass()) if panel_pass() else False
+        expected_pass = panel_pass()
+        ok_user = secure_str_eq(user, panel_user())
+        ok_pass = secure_str_eq(password, expected_pass) if expected_pass else False
         if ok_user and ok_pass:
             session["panel_ok"] = True
             session.permanent = True
@@ -1146,6 +1157,7 @@ def dashboard():
                 filebrowser_url=f"{host}{settings['filebrowser_path']}",
                 phpmyadmin_url=f"{host}{settings['phpmyadmin_path']}",
                 files=allowed_config_files(),
+                wordpress_present=wordpress_is_present(),
             )
         )
     )

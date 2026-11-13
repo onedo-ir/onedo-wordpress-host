@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="{{ url_for('static', filename='panel.css') }}?v=14">
+  <link rel="stylesheet" href="{{ url_for('static', filename='panel.css') }}?v=15">
 </head>
 <body class="{% if logged_in %}has-sidebar{% endif %}">
   {% if logged_in %}
@@ -75,6 +75,7 @@
         <div class="topbar-title">
           {% block topbar_title %}{% endblock %}
         </div>
+        <a class="topbar-site-link" href="/" target="_blank" rel="noopener noreferrer">مشاهده سایت</a>
       </header>
       <main class="content">
         {% block body %}{% endblock %}

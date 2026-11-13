@@ -4,7 +4,6 @@
 <div class="login-page">
   <form class="login-box" method="post" action="{{ url_for('login', next=next_url) }}">
     <h1>onedo wordpress</h1>
-    <p class="sub">برای دسترسی به فایل‌منیجر، phpMyAdmin و ابزارهای سرور وارد شوید.</p>
     {% if error %}
     <div class="alert err">{{ error }}</div>
     {% endif %}

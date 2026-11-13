@@ -6,9 +6,15 @@
 
 <div class="grid" style="margin-top:1.25rem">
   <div class="tile">
+    {% if wordpress_present %}
+    <h2>آپدیت وردپرس</h2>
+    <p>مشاهدهٔ نسخه‌ها و آپدیت هستهٔ وردپرس روی مسیر سایت</p>
+    <a class="btn" href="{{ url_for('wordpress') }}">رفتن به آپدیت وردپرس</a>
+    {% else %}
     <h2>نصب وردپرس</h2>
     <p>مشاهدهٔ نسخه‌ها و نصب هستهٔ وردپرس روی مسیر سایت</p>
     <a class="btn" href="{{ url_for('wordpress') }}">رفتن به نصب وردپرس</a>
+    {% endif %}
   </div>
   <div class="tile">
     <h2>مانیتور منابع</h2>
