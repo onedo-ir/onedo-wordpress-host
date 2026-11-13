@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}نصب وردپرس — پنل مدیریت{% endblock %}
+{% block title %}نصب وردپرس — onedo wordpress{% endblock %}
 {% block topbar_title %}نصب وردپرس{% endblock %}
 {% block body %}
 <p class="muted page-lead">هستهٔ وردپرس از این صفحه دانلود و در <code class="ltr">/var/www/html</code> نصب می‌شود. پس از نصب، ویزارد را از آدرس سایت کامل کنید.</p>
@@ -12,7 +12,14 @@
   <div class="tile">
     <h2>وضعیت فعلی</h2>
     {% if wordpress_present %}
-    <p>وردپرس نصب است{% if current_version %} — نسخهٔ فعلی: <strong class="ltr">{{ current_version }}</strong>{% endif %}.</p>
+    <p class="wp-current-version">
+      نسخهٔ نصب‌شده:
+      {% if current_version %}
+      <strong class="ltr">{{ current_version }}</strong>
+      {% else %}
+      <strong>نصب شده (نسخه تشخیص داده نشد)</strong>
+      {% endif %}
+    </p>
     {% else %}
     <p>هنوز هستهٔ وردپرس در مسیر سایت نیست.</p>
     {% endif %}
@@ -20,8 +27,8 @@
   </div>
 
   <div class="tile wp-install-tile">
-    <h2>انتخاب نسخه و نصب</h2>
-    <p>فهرست رسمی نسخه‌های wordpress.org</p>
+    <h2>{% if wordpress_present %}آپدیت وردپرس{% else %}انتخاب نسخه و نصب{% endif %}</h2>
+    <p>{% if wordpress_present %}نسخهٔ جدید را انتخاب کنید تا هسته به‌روز شود.{% else %}فهرست رسمی نسخه‌های wordpress.org{% endif %}</p>
     {% if versions %}
     <form method="post" id="wp-install-form">
       <input type="hidden" name="action" value="install">
@@ -49,9 +56,13 @@
       </label>
 
       <div class="row-actions">
-        <button class="btn" type="submit" id="wp-install-btn">نصب وردپرس</button>
+        <button class="btn" type="submit" id="wp-install-btn"
+          data-busy="{% if wordpress_present %}در حال آپدیت…{% else %}در حال دانلود و نصب…{% endif %}"
+          data-confirm="{% if wordpress_present %}آپدیت هستهٔ وردپرس انجام شود؟{% else %}نصب هستهٔ وردپرس انجام شود؟{% endif %}">
+          {% if wordpress_present %}آپدیت وردپرس{% else %}نصب وردپرس{% endif %}
+        </button>
       </div>
-      <p class="muted">دانلود ممکن است چند دقیقه طول بکشد؛ صفحه را نبندید.</p>
+      <p class="muted">{% if wordpress_present %}دانلود و آپدیت ممکن است چند دقیقه طول بکشد؛ صفحه را نبندید.{% else %}دانلود ممکن است چند دقیقه طول بکشد؛ صفحه را نبندید.{% endif %}</p>
     </form>
     {% else %}
     <p class="alert err" style="margin-top:1rem">فهرست نسخه‌ها در دسترس نیست. اتصال خروجی کانتینر به wordpress.org را بررسی کنید.</p>
@@ -80,12 +91,13 @@
   var btn = document.getElementById("wp-install-btn");
   if (form && btn) {
     form.addEventListener("submit", function (e) {
-      if (!window.confirm("نصب/به‌روزرسانی هستهٔ وردپرس انجام شود؟")) {
+      var confirmMsg = btn.getAttribute("data-confirm") || "ادامه داده شود؟";
+      if (!window.confirm(confirmMsg)) {
         e.preventDefault();
         return;
       }
       btn.disabled = true;
-      btn.textContent = "در حال دانلود و نصب…";
+      btn.textContent = btn.getAttribute("data-busy") || "لطفاً صبر کنید…";
     });
   }
 })();

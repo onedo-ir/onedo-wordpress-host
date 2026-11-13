@@ -91,11 +91,12 @@ a:hover { color: #5eead4; }
 
 .brand {
   font-weight: 700;
-  font-size: 1.05rem;
+  font-size: 0.98rem;
   color: var(--text);
   text-decoration: none;
   display: block;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
 }
 
 .brand:hover { color: var(--accent); text-decoration: none; }
@@ -192,6 +193,7 @@ a:hover { color: #5eead4; }
   grid-area: main;
   direction: rtl;
   min-width: 0;
+  min-height: 100vh;
   display: flex;
   flex-direction: column;
 }
@@ -248,9 +250,10 @@ body.sidebar-open .menu-toggle span:nth-child(3) {
 }
 
 .content {
+  flex: 1 1 auto;
   width: min(1100px, calc(100% - 2.5rem));
   margin: 0 auto;
-  padding: 1.5rem 0 3rem;
+  padding: 1.5rem 0 2rem;
   animation: fadeUp 0.45s var(--ease);
 }
 
@@ -331,8 +334,11 @@ body.sidebar-open .menu-toggle span:nth-child(3) {
 /* ——— Login ——— */
 .login-page {
   min-height: 100vh;
-  display: grid;
-  place-items: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1.25rem;
   padding: 1.5rem;
 }
 
@@ -348,13 +354,40 @@ body.sidebar-open .menu-toggle span:nth-child(3) {
 
 .login-box h1 {
   margin: 0 0 0.35rem;
-  font-size: 1.65rem;
+  font-size: 1.55rem;
+  letter-spacing: -0.02em;
 }
 
 .login-box .sub {
   color: var(--muted);
   margin: 0 0 1.5rem;
   font-size: 0.95rem;
+}
+
+.login-credit {
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+
+/* ——— Panel footer ——— */
+.panel-footer {
+  margin-top: auto;
+  padding: 0.85rem 1.35rem 1.15rem;
+  border-top: 1px solid var(--line-soft);
+  color: var(--muted);
+  font-size: 0.82rem;
+  text-align: center;
+}
+
+.panel-footer a {
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.panel-footer a:hover {
+  color: #5eead4;
 }
 
 /* ——— Forms ——— */
@@ -1002,6 +1035,17 @@ code, .ltr {
 }
 
 /* ——— WordPress install ——— */
+.wp-current-version {
+  margin: 0.35rem 0 0.85rem;
+  font-size: 1.05rem;
+}
+
+.wp-current-version strong {
+  color: var(--accent);
+  font-size: 1.2rem;
+  font-weight: 700;
+}
+
 .check-row {
   display: flex;
   align-items: flex-start;

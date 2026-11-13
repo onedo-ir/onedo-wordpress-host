@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>onedo wordpress</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@500;600;700&family=Vazirmatn:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --ink: #071018;
+      --ink-soft: #0d1a24;
+      --mist: #9eb6c8;
+      --snow: #f2f7fb;
+      --teal: #2dd4bf;
+      --teal-deep: #0f766e;
+      --sky: #38bdf8;
+      --ease: cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      min-height: 100%;
+      color: var(--snow);
+      font-family: "Vazirmatn", Tahoma, sans-serif;
+      background: var(--ink);
+    }
+
+    body {
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    .stage {
+      position: relative;
+      min-height: 100vh;
+      display: grid;
+      align-items: stretch;
+      isolation: isolate;
+    }
+
+    .stage::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: -2;
+      background:
+        radial-gradient(1200px 700px at 80% 10%, rgba(45, 212, 191, 0.22), transparent 55%),
+        radial-gradient(900px 600px at 0% 90%, rgba(56, 189, 248, 0.16), transparent 50%),
+        linear-gradient(160deg, #071018 0%, #0b1822 45%, #102433 100%);
+      animation: wash 14s ease-in-out infinite alternate;
+    }
+
+    .stage::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: -1;
+      background-image:
+        linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+      background-size: 64px 64px;
+      mask-image: radial-gradient(ellipse 80% 70% at 50% 40%, #000 20%, transparent 75%);
+      pointer-events: none;
+    }
+
+    @keyframes wash {
+      from { filter: hue-rotate(0deg) saturate(1); }
+      to { filter: hue-rotate(12deg) saturate(1.15); }
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: 1.05fr 0.95fr;
+      gap: clamp(1.5rem, 4vw, 3.5rem);
+      align-items: center;
+      width: min(1120px, calc(100% - 2.5rem));
+      margin: 0 auto;
+      padding: clamp(2rem, 6vh, 4.5rem) 0;
+      min-height: 100vh;
+    }
+
+    .copy {
+      animation: rise 0.9s var(--ease) both;
+    }
+
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(28px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .brand {
+      margin: 0 0 1.35rem;
+      font-family: "Outfit", "Vazirmatn", sans-serif;
+      font-weight: 700;
+      font-size: clamp(2.4rem, 6vw, 4.2rem);
+      line-height: 1.05;
+      letter-spacing: -0.04em;
+      color: var(--snow);
+    }
+
+    .brand span {
+      display: inline-block;
+      background: linear-gradient(120deg, var(--teal) 0%, var(--sky) 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+
+    h1 {
+      margin: 0 0 0.85rem;
+      font-size: clamp(1.35rem, 2.6vw, 1.85rem);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .lead {
+      margin: 0 0 1.75rem;
+      max-width: 34rem;
+      color: var(--mist);
+      font-size: 1.05rem;
+      line-height: 1.75;
+    }
+
+    .cta {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.65rem;
+      padding: 0.95rem 1.4rem;
+      border-radius: 999px;
+      background: linear-gradient(120deg, var(--teal) 0%, #14b8a6 55%, var(--sky) 120%);
+      color: #042f2e;
+      font-weight: 700;
+      font-size: 1rem;
+      text-decoration: none;
+      box-shadow:
+        0 0 0 1px rgba(255, 255, 255, 0.12) inset,
+        0 18px 40px rgba(15, 118, 110, 0.35);
+      transition: transform 0.25s var(--ease), box-shadow 0.25s var(--ease), filter 0.25s;
+      animation: rise 0.9s var(--ease) 0.12s both;
+    }
+
+    .cta:hover {
+      transform: translateY(-2px);
+      filter: brightness(1.05);
+      box-shadow:
+        0 0 0 1px rgba(255, 255, 255, 0.18) inset,
+        0 22px 48px rgba(15, 118, 110, 0.45);
+    }
+
+    .cta svg {
+      width: 1.1rem;
+      height: 1.1rem;
+    }
+
+    .visual {
+      position: relative;
+      animation: rise 1s var(--ease) 0.18s both;
+    }
+
+    .visual-glow {
+      position: absolute;
+      inset: 12% 8%;
+      background: radial-gradient(circle, rgba(45, 212, 191, 0.28), transparent 70%);
+      filter: blur(18px);
+      animation: pulse 4.5s ease-in-out infinite;
+      pointer-events: none;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 0.65; transform: scale(0.96); }
+      50% { opacity: 1; transform: scale(1.04); }
+    }
+
+    .browser {
+      position: relative;
+      border-radius: 18px;
+      overflow: hidden;
+      background: linear-gradient(180deg, #152433 0%, #0d1822 100%);
+      border: 1px solid rgba(158, 182, 200, 0.22);
+      box-shadow:
+        0 30px 80px rgba(0, 0, 0, 0.45),
+        0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+      transform: perspective(1200px) rotateY(6deg) rotateX(3deg);
+      animation: float 7s ease-in-out infinite;
+    }
+
+    @keyframes float {
+      0%, 100% { transform: perspective(1200px) rotateY(6deg) rotateX(3deg) translateY(0); }
+      50% { transform: perspective(1200px) rotateY(4deg) rotateX(2deg) translateY(-12px); }
+    }
+
+    .chrome {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      padding: 0.85rem 1rem;
+      background: rgba(7, 16, 24, 0.85);
+      border-bottom: 1px solid rgba(158, 182, 200, 0.12);
+    }
+
+    .dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: #334155;
+    }
+
+    .dot:nth-child(1) { background: #f87171; }
+    .dot:nth-child(2) { background: #fbbf24; }
+    .dot:nth-child(3) { background: #34d399; }
+
+    .url {
+      flex: 1;
+      margin-inline-start: 0.5rem;
+      padding: 0.35rem 0.75rem;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.05);
+      color: var(--mist);
+      font-family: "Outfit", sans-serif;
+      font-size: 0.78rem;
+      letter-spacing: 0.02em;
+      direction: ltr;
+      text-align: left;
+    }
+
+    .screen {
+      padding: 1.25rem 1.15rem 1.4rem;
+    }
+
+    .screen-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 1.1rem;
+    }
+
+    .logo-pill {
+      font-family: "Outfit", sans-serif;
+      font-weight: 600;
+      font-size: 0.85rem;
+      letter-spacing: -0.02em;
+      color: var(--teal);
+    }
+
+    .bars {
+      display: flex;
+      gap: 0.35rem;
+    }
+
+    .bars i {
+      display: block;
+      width: 28px;
+      height: 8px;
+      border-radius: 999px;
+      background: rgba(158, 182, 200, 0.2);
+    }
+
+    .hero-block {
+      height: 88px;
+      border-radius: 12px;
+      margin-bottom: 0.85rem;
+      background:
+        linear-gradient(120deg, rgba(45, 212, 191, 0.35), rgba(56, 189, 248, 0.2) 55%, rgba(15, 118, 110, 0.15)),
+        linear-gradient(180deg, #1a2d3c, #122230);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero-block::after {
+      content: "";
+      position: absolute;
+      inset: auto 12% 18% 12%;
+      height: 10px;
+      border-radius: 999px;
+      background: rgba(242, 247, 251, 0.55);
+    }
+
+    .hero-block::before {
+      content: "";
+      position: absolute;
+      inset: auto 30% 38% 12%;
+      height: 8px;
+      border-radius: 999px;
+      background: rgba(242, 247, 251, 0.28);
+    }
+
+    .cols {
+      display: grid;
+      grid-template-columns: 1.2fr 0.8fr;
+      gap: 0.75rem;
+    }
+
+    .cols span {
+      display: block;
+      height: 54px;
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(158, 182, 200, 0.1);
+    }
+
+    .cols span:last-child {
+      background: linear-gradient(160deg, rgba(45, 212, 191, 0.18), rgba(255, 255, 255, 0.04));
+    }
+
+    .credit {
+      position: absolute;
+      inset-inline: 0;
+      bottom: 1.1rem;
+      text-align: center;
+      color: rgba(158, 182, 200, 0.7);
+      font-size: 0.82rem;
+    }
+
+    .credit a {
+      color: var(--teal);
+      text-decoration: none;
+      font-weight: 600;
+    }
+
+    .credit a:hover { color: var(--sky); }
+
+    @media (max-width: 860px) {
+      .hero {
+        grid-template-columns: 1fr;
+        padding-bottom: 4.5rem;
+        min-height: auto;
+      }
+
+      .browser {
+        transform: none;
+        animation: float-mobile 6s ease-in-out infinite;
+      }
+
+      @keyframes float-mobile {
+        0%, 100% { transform: translateY(0); }
+        50% { transform: translateY(-10px); }
+      }
+
+      .copy { order: 1; }
+      .visual { order: 2; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation: none !important;
+        transition: none !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="stage">
+    <div class="hero">
+      <div class="copy">
+        <p class="brand">onedo <span>wordpress</span></p>
+        <h1>وردپرس هنوز نصب نشده</h1>
+        <p class="lead">سایت آمادهٔ راه‌اندازی است. از پنل نسخهٔ وردپرس را انتخاب کنید و در چند دقیقه نصب را تمام کنید.</p>
+        <a class="cta" href="/panel/wordpress">
+          نصب وردپرس از پنل
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M14 6l-6 6 6 6" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </a>
+      </div>
+
+      <div class="visual" aria-hidden="true">
+        <div class="visual-glow"></div>
+        <div class="browser">
+          <div class="chrome">
+            <span class="dot"></span>
+            <span class="dot"></span>
+            <span class="dot"></span>
+            <div class="url">yoursite.ir</div>
+          </div>
+          <div class="screen">
+            <div class="screen-top">
+              <div class="logo-pill">onedo wordpress</div>
+              <div class="bars"><i></i><i></i><i></i></div>
+            </div>
+            <div class="hero-block"></div>
+            <div class="cols">
+              <span></span>
+              <span></span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="credit">ساخته شده توسط <a href="https://onedo.ir" target="_blank" rel="noopener noreferrer">onedo.ir</a></p>
+  </div>
+</body>
+</html>

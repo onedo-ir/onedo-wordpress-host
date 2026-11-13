@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}پنل مدیریت{% endblock %}</title>
+  <title>{% block title %}onedo wordpress{% endblock %}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="{{ url_for('static', filename='panel.css') }}?v=11">
+  <link rel="stylesheet" href="{{ url_for('static', filename='panel.css') }}?v=13">
 </head>
 <body class="{% if logged_in %}has-sidebar{% endif %}">
   {% if logged_in %}
@@ -18,7 +18,7 @@
       <div class="sidebar-brand">
         <span class="brand-mark" aria-hidden="true"></span>
         <div>
-          <a class="brand" href="{{ url_for('dashboard') }}">پنل مدیریت</a>
+          <a class="brand" href="{{ url_for('dashboard') }}">onedo wordpress</a>
           <p class="brand-sub">کنترل سرور وردپرس</p>
         </div>
       </div>
@@ -52,6 +52,10 @@
           <span class="nav-ico" aria-hidden="true">⚙</span>
           <span>تنظیمات پنل</span>
         </a>
+        <a href="https://onedo.ir/app/tickets" class="nav-item" target="_blank" rel="noopener noreferrer">
+          <span class="nav-ico" aria-hidden="true">✉</span>
+          <span>پشتیبانی</span>
+        </a>
       </nav>
 
       <div class="sidebar-foot">
@@ -75,12 +79,15 @@
       <main class="content">
         {% block body %}{% endblock %}
       </main>
+      <footer class="panel-footer">
+        ساخته شده توسط <a href="https://onedo.ir" target="_blank" rel="noopener noreferrer">onedo.ir</a>
+      </footer>
     </div>
   </div>
   {% else %}
     {% block auth %}{% endblock %}
   {% endif %}
-  <script src="{{ url_for('static', filename='panel.js') }}?v=11" defer></script>
+  <script src="{{ url_for('static', filename='panel.js') }}?v=12" defer></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

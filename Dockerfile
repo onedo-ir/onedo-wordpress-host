@@ -79,17 +79,11 @@ RUN chmod +x /filebrowser/get.sh \
 
 # ===== WordPress docroot (core installed via /panel/wordpress) =====
 COPY wordpress/.htaccess /opt/wordpress.htaccess
+COPY wordpress/index.html /opt/wordpress-placeholder.html
 RUN mkdir -p /var/www/html \
- && printf '%s\n' \
-      '<!DOCTYPE html><html lang="fa" dir="rtl"><head><meta charset="utf-8">' \
-      '<meta name="viewport" content="width=device-width,initial-scale=1">' \
-      '<title>وردپرس نصب نشده</title></head><body style="font-family:sans-serif;padding:2rem;text-align:center">' \
-      '<h1>وردپرس هنوز نصب نشده</h1>' \
-      '<p>از <a href="/panel/wordpress">پنل مدیریت ← نصب وردپرس</a> نسخه را انتخاب و نصب کنید.</p>' \
-      '</body></html>' \
-      > /var/www/html/index.html \
+ && cp /opt/wordpress-placeholder.html /var/www/html/index.html \
  && chown -R www-data:www-data /var/www \
- && chmod 644 /opt/wordpress.htaccess
+ && chmod 644 /opt/wordpress.htaccess /opt/wordpress-placeholder.html
 
 # ===== Admin panel (/panel) =====
 COPY panel /opt/panel

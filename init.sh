@@ -456,16 +456,20 @@ ensure_wp_reverse_proxy_ssl
 if [ ! -f /var/www/html/wp-load.php ]; then
     mkdir -p /var/www/html
     if [ ! -f /var/www/html/index.php ] && [ ! -f /var/www/html/index.html ]; then
-        cat > /var/www/html/index.html <<'HTML'
+        if [ -f /opt/wordpress-placeholder.html ]; then
+            cp /opt/wordpress-placeholder.html /var/www/html/index.html
+        else
+            cat > /var/www/html/index.html <<'HTML'
 <!DOCTYPE html>
 <html lang="fa" dir="rtl">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>وردپرس نصب نشده</title></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>onedo wordpress</title></head>
 <body style="font-family:sans-serif;padding:2rem;text-align:center">
 <h1>وردپرس هنوز نصب نشده</h1>
-<p>از <a href="/panel/wordpress">پنل مدیریت ← نصب وردپرس</a> نسخه را انتخاب و نصب کنید.</p>
+<p>از <a href="/panel/wordpress">onedo wordpress ← نصب وردپرس</a> نسخه را انتخاب و نصب کنید.</p>
 </body>
 </html>
 HTML
+        fi
         echo "[INIT] WordPress core missing — placeholder index written (install via /panel/wordpress)"
     fi
 else

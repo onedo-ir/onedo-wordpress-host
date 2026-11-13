@@ -1319,15 +1319,22 @@ def wordpress():
                 err = "نسخه در فهرست رسمی وردپرس نیست."
             else:
                 try:
+                    was_present = present
                     detail = install_wordpress(version, preserve_content=preserve)
                     current = current_wordpress_version()
                     present = wordpress_is_present()
-                    message = (
-                        f"وردپرس {version} با موفقیت نصب شد."
-                        + (f" ({detail[:200]})" if detail else "")
-                    )
+                    if was_present:
+                        message = f"وردپرس با موفقیت به نسخهٔ {version} آپدیت شد."
+                    else:
+                        message = f"وردپرس {version} با موفقیت نصب شد."
+                    if detail:
+                        message += f" ({detail[:200]})"
                 except Exception as exc:  # noqa: BLE001
-                    err = f"نصب ناموفق: {exc}"
+                    err = (
+                        f"آپدیت ناموفق: {exc}"
+                        if present
+                        else f"نصب ناموفق: {exc}"
+                    )
         else:
             err = "عملیات نامعتبر."
 

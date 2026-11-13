@@ -1,9 +1,9 @@
 {% extends "base.html" %}
-{% block title %}ورود — پنل مدیریت{% endblock %}
+{% block title %}ورود — onedo wordpress{% endblock %}
 {% block auth %}
 <div class="login-page">
   <form class="login-box" method="post" action="{{ url_for('login', next=next_url) }}">
-    <h1>پنل مدیریت</h1>
+    <h1>onedo wordpress</h1>
     <p class="sub">برای دسترسی به فایل‌منیجر، phpMyAdmin و ابزارهای سرور وارد شوید.</p>
     {% if error %}
     <div class="alert err">{{ error }}</div>
@@ -15,5 +15,6 @@
     <input id="password" name="password" type="password" autocomplete="current-password" required>
     <button class="btn" type="submit">ورود</button>
   </form>
+  <p class="panel-footer login-credit">ساخته شده توسط <a href="https://onedo.ir" target="_blank" rel="noopener noreferrer">onedo.ir</a></p>
 </div>
 {% endblock %}
