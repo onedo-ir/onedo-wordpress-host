@@ -1,6 +1,5 @@
 # Build the WordPress stack image and replace the published :latest tag.
-# Runs only when a push to main includes the word "build" in the commit message,
-# or when triggered manually (workflow_dispatch).
+# Runs on every push to main, or when triggered manually (workflow_dispatch).
 # Image version tag = sanitized commit subject (not the SHA hex).
 # Tuned for Gitea container registry (rejects buildx attestation / OCI index).
 #
@@ -23,13 +22,6 @@ env:
 
 jobs:
   build-and-push:
-    # Skip ordinary pushes; only build when commit message contains "build"
-    # (no toLower — Gitea Actions does not implement it)
-    if: >
-      github.event_name == 'workflow_dispatch' ||
-      contains(github.event.head_commit.message, 'build') ||
-      contains(github.event.head_commit.message, 'Build') ||
-      contains(github.event.head_commit.message, 'BUILD')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
