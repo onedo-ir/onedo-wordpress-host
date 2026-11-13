@@ -1822,4 +1822,3 @@ def security_headers(resp):
 
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=9090)
-  app.run(host="127.0.0.1", port=9090)
