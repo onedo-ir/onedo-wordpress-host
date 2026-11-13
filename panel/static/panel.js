@@ -452,6 +452,13 @@
     var chatClear = document.getElementById("chat-clear");
     var chatHistory = [];
     var chatBusy = false;
+    var phraseTimer = null;
+    var loadingPhrases = [
+      "در حال وصل شدن به مدل…",
+      "در حال خواندن فایل‌های وردپرس…",
+      "ایجنت در حال کار روی ورک‌اسپیس است…",
+      "چند لحظه، پاسخ را آماده می‌کنم…"
+    ];
 
     function setChatStatus(text, kind) {
       if (!chatStatus) return;
@@ -464,13 +471,35 @@
       if (chatMessages) chatMessages.scrollTop = chatMessages.scrollHeight;
     }
 
+    function makeAvatar(letter) {
+      var avatar = document.createElement("span");
+      avatar.className = "chat-avatar";
+      avatar.setAttribute("aria-hidden", "true");
+      avatar.textContent = letter;
+      return avatar;
+    }
+
     function appendBubble(role, text) {
+      var row = document.createElement("div");
+      row.className = "chat-row " + role;
+      if (role === "user") row.appendChild(makeAvatar("ش"));
+      if (role === "assistant") row.appendChild(makeAvatar("ا"));
       var el = document.createElement("div");
       el.className = "chat-bubble " + role;
-      el.textContent = text;
-      chatMessages.appendChild(el);
+      if (role === "user" || role === "assistant") {
+        var meta = document.createElement("div");
+        meta.className = "chat-meta";
+        meta.textContent = role === "user" ? "شما" : "ایجنت";
+        el.appendChild(meta);
+      }
+      var body = document.createElement("div");
+      body.className = "chat-text";
+      body.textContent = text;
+      el.appendChild(body);
+      row.appendChild(el);
+      chatMessages.appendChild(row);
       scrollChat();
-      return el;
+      return row;
     }
 
     function appendSteps(steps) {
@@ -488,11 +517,61 @@
       scrollChat();
     }
 
+    function hideChatLoading() {
+      if (phraseTimer) {
+        clearInterval(phraseTimer);
+        phraseTimer = null;
+      }
+      var el = document.getElementById("chat-loading");
+      if (el && el.parentNode) el.parentNode.removeChild(el);
+    }
+
+    function showChatLoading() {
+      hideChatLoading();
+      var row = document.createElement("div");
+      row.className = "chat-row assistant";
+      row.id = "chat-loading";
+      row.setAttribute("role", "status");
+      row.appendChild(makeAvatar("ا"));
+      var bubble = document.createElement("div");
+      bubble.className = "chat-bubble assistant is-loading";
+      var dots = document.createElement("div");
+      dots.className = "chat-typing";
+      dots.setAttribute("aria-hidden", "true");
+      for (var i = 0; i < 3; i++) dots.appendChild(document.createElement("i"));
+      var label = document.createElement("p");
+      label.className = "chat-loading-text";
+      label.id = "chat-loading-text";
+      label.textContent = loadingPhrases[0];
+      bubble.appendChild(dots);
+      bubble.appendChild(label);
+      row.appendChild(bubble);
+      chatMessages.appendChild(row);
+      var n = 0;
+      phraseTimer = setInterval(function () {
+        n = (n + 1) % loadingPhrases.length;
+        var node = document.getElementById("chat-loading-text");
+        if (node) node.textContent = loadingPhrases[n];
+        setChatStatus(loadingPhrases[n], "busy");
+        scrollChat();
+      }, 2200);
+      scrollChat();
+    }
+
     function setChatBusy(on) {
       chatBusy = on;
+      chatRoot.classList.toggle("is-busy", on);
+      chatRoot.setAttribute("aria-busy", on ? "true" : "false");
       if (chatInput) chatInput.disabled = on || !chatReady;
       var btn = chatForm && chatForm.querySelector(".chat-send");
-      if (btn) btn.disabled = on || !chatReady;
+      if (btn) {
+        btn.disabled = on || !chatReady;
+        btn.classList.toggle("is-loading", on);
+        var label = btn.querySelector(".chat-send-label");
+        if (label) label.textContent = on ? "در حال کار" : "ارسال";
+      }
+      if (on) showChatLoading();
+      else hideChatLoading();
     }
 
     function sendChat(text) {
@@ -504,7 +583,7 @@
       if (chatHistory.length > 40) chatHistory = chatHistory.slice(-40);
       if (chatInput) chatInput.value = "";
       setChatBusy(true);
-      setChatStatus("در حال اجرا…", "busy");
+      setChatStatus("در حال وصل شدن به مدل…", "busy");
 
       var payloadHistory = chatHistory.slice(0, -1);
 
@@ -524,6 +603,7 @@
         })
         .then(function (res) {
           var data = res.data;
+          hideChatLoading();
           appendSteps(data.steps);
           if (data.ok && data.reply) {
             appendBubble("assistant", data.reply);
@@ -533,10 +613,10 @@
             var err = data.error || "پاسخ نامعتبر از سرور.";
             appendBubble("err", err);
             setChatStatus("خطا", "err");
-            // Keep user message in history so context stays honest; no fake assistant.
           }
         })
         .catch(function () {
+          hideChatLoading();
           appendBubble("err", "ارتباط با سرور برقرار نشد.");
           setChatStatus("خطا", "err");
         })

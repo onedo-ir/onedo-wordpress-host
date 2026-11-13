@@ -182,17 +182,42 @@ def build_system_prompt() -> str:
     return (
         f"{skill.strip()}\n\n"
         "## Runtime\n\n"
-        f"- Workspace absolute path: `{WORKSPACE}`\n"
-        "- All tool paths are relative to that workspace.\n"
-        "- Prefer inspecting with list_dir / glob_files / grep_files before edits.\n"
-        "- After finishing, give a short final answer to the user (no raw tool dumps).\n"
+        f"- Workspace absolute path: `{WORKSPACE}` (you can list, read, and edit it now).\n"
+        "- Tool paths are relative to that workspace. Empty path or `.` is the root.\n"
+        "- The tools are already enabled. Do not tell the user that list_dir/read_file are missing.\n"
+        "- Inspect with list_dir / glob_files / grep_files / read_file before edits.\n"
+        "- A file changes only after write_file or edit_file succeeds.\n"
+        "- After finishing, give a short final answer (no raw tool dumps, no ```tool blocks).\n"
     )
 
 
-def _safe_resolve(rel: str | None, *, must_exist: bool = False) -> Path:
-    raw = (rel or "").strip().replace("\\", "/")
+def _normalize_user_path(rel: str | None) -> str:
+    raw = re.sub(r"/{2,}", "/", (rel or "").strip().replace("\\", "/"))
+    while raw.startswith("./"):
+        raw = raw[2:]
+    if raw in ("", "."):
+        return ""
+    roots = []
+    roots.append(str(WORKSPACE).replace("\\", "/").rstrip("/"))
+    try:
+        roots.append(str(WORKSPACE.resolve()).replace("\\", "/").rstrip("/"))
+    except OSError:
+        pass
+    for root in roots:
+        if raw == root:
+            return ""
+        prefix = root + "/"
+        if raw.startswith(prefix):
+            raw = raw[len(prefix):]
+            break
+    raw = raw.strip("/") if not raw.startswith("/") else raw
     if raw.startswith("/"):
-        raise ValueError("مسیر باید نسبی باشد (بدون / اول).")
+        raise ValueError("مسیر باید نسبی باشد یا زیر ورک‌اسپیس وردپرس.")
+    return raw.strip("/")
+
+
+def _safe_resolve(rel: str | None, *, must_exist: bool = False) -> Path:
+    raw = _normalize_user_path(rel)
     if ".." in Path(raw).parts:
         raise ValueError("مسیر خارج از ورک‌اسپیس مجاز نیست.")
     root = WORKSPACE.resolve()
@@ -261,6 +286,45 @@ def tool_read_file(path: str, offset: int | None = None, limit: int | None = Non
     return "\n".join(numbered)
 
 
+def _publish_web_path(path: Path) -> None:
+    """Keep PHP able to read and update files the agent writes."""
+    if not path.exists():
+        return
+    try:
+        import grp
+        import pwd
+
+        uid = pwd.getpwnam("www-data").pw_uid
+        gid = grp.getgrnam("www-data").gr_gid
+    except (ImportError, KeyError, OSError):
+        return
+    try:
+        os.chown(path, uid, gid)
+        os.chmod(path, 0o755 if path.is_dir() else 0o644)
+    except OSError:
+        return
+
+
+def _publish_written(path: Path) -> None:
+    root = WORKSPACE.resolve()
+    current = path.parent
+    chain: list[Path] = []
+    while True:
+        try:
+            current.relative_to(root)
+        except ValueError:
+            break
+        if current == root:
+            break
+        chain.append(current)
+        if current.parent == current:
+            break
+        current = current.parent
+    for directory in reversed(chain):
+        _publish_web_path(directory)
+    _publish_web_path(path)
+
+
 def tool_write_file(path: str, content: str) -> str:
     if content is None:
         raise ValueError("content لازم است.")
@@ -274,6 +338,7 @@ def tool_write_file(path: str, content: str) -> str:
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(raw, encoding="utf-8")
+        _publish_written(target)
     except OSError as exc:
         raise RuntimeError(f"نوشتن فایل ممکن نشد: {exc}") from exc
     return f"نوشته شد: `{_rel_display(target)}` ({len(encoded)} بایت)"
@@ -312,6 +377,7 @@ def tool_edit_file(
         raise ValueError(f"حجم فایل بعد از ویرایش از {MAX_WRITE_BYTES} بایت بیشتر است.")
     try:
         target.write_text(updated, encoding="utf-8")
+        _publish_written(target)
     except OSError as exc:
         raise RuntimeError(f"نوشتن فایل ممکن نشد: {exc}") from exc
     return f"ویرایش شد: `{_rel_display(target)}` ({n} جایگزینی)"
@@ -430,7 +496,30 @@ TOOL_HANDLERS = {
 }
 
 
+TOOL_ALIASES = {
+    "project_list_dir": "list_dir",
+    "list_directory": "list_dir",
+    "listdir": "list_dir",
+    "ls": "list_dir",
+    "project_read_file": "read_file",
+    "read": "read_file",
+    "project_write_file": "write_file",
+    "write": "write_file",
+    "project_edit_file": "edit_file",
+    "edit": "edit_file",
+    "search_replace": "edit_file",
+    "project_delete_file": "delete_file",
+    "delete": "delete_file",
+    "project_glob": "glob_files",
+    "glob": "glob_files",
+    "project_grep": "grep_files",
+    "grep": "grep_files",
+    "search": "grep_files",
+}
+
+
 def run_tool(name: str, arguments: dict[str, Any] | str | None) -> tuple[bool, str]:
+    name = TOOL_ALIASES.get((name or "").strip(), (name or "").strip())
     if name not in TOOL_HANDLERS:
         return False, f"ابزار ناشناخته: {name}"
     if isinstance(arguments, str):
@@ -464,20 +553,173 @@ def _normalize_history(history: list[Any] | None) -> list[dict[str, str]]:
     return out
 
 
-def _chat_completions(messages: list[dict[str, Any]]) -> dict[str, Any]:
+_NO_ACCESS_RE = re.compile(
+    r"دسترسی ندارم|در دسترس نبود|ابزارهای خواندن فایل|cannot access|don't have access|do not have access|no access to",
+    re.I,
+)
+_FILE_INTENT_RE = re.compile(
+    r"فایل|پوشه|وردپرس|wp-content|wp-config|قالب|پلاگین|theme|plugin|لیست کن|ببین|ویرایش|ادیت",
+    re.I,
+)
+
+
+def _message_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict) and isinstance(part.get("text"), str):
+                parts.append(part["text"])
+        return "".join(parts)
+    return ""
+
+
+def _json_calls_from_blob(blob: str) -> list[dict[str, Any]]:
+    blob = (blob or "").strip()
+    if not blob:
+        return []
+    try:
+        data: Any = json.loads(blob)
+    except json.JSONDecodeError:
+        match = re.search(r"\{[\s\S]*\}", blob)
+        if not match:
+            return []
+        try:
+            data = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return []
+    items = data if isinstance(data, list) else [data]
+    calls: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or item.get("tool") or "").strip()
+        args = item.get("arguments")
+        if args is None:
+            args = item.get("args")
+        if isinstance(args, str):
+            try:
+                args = json.loads(args) if args.strip() else {}
+            except json.JSONDecodeError:
+                args = {}
+        if not isinstance(args, dict):
+            args = {}
+        if name and not args:
+            args = {
+                key: value
+                for key, value in item.items()
+                if key not in ("name", "tool", "arguments", "args", "id")
+            }
+        if name:
+            calls.append({"id": str(item.get("id") or name), "name": name, "arguments": args})
+    return calls
+
+
+def _text_tool_calls(content: str) -> list[dict[str, Any]]:
+    if not content:
+        return []
+    found: list[dict[str, Any]] = []
+    for match in re.finditer(r"```tool\s*([\s\S]*?)```", content, flags=re.I):
+        found.extend(_json_calls_from_blob(match.group(1)))
+    if not found:
+        for match in re.finditer(r"<tool_call>\s*([\s\S]*?)</tool_call>", content, flags=re.I):
+            found.extend(_json_calls_from_blob(match.group(1)))
+    if not found:
+        stripped = content.strip()
+        if stripped.startswith("{") and stripped.endswith("}"):
+            found.extend(_json_calls_from_blob(stripped))
+    return found
+
+
+def _native_tool_calls(msg: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_calls = msg.get("tool_calls")
+    calls: list[dict[str, Any]] = []
+    if isinstance(raw_calls, list):
+        for call in raw_calls:
+            if not isinstance(call, dict):
+                continue
+            fn = call.get("function") if isinstance(call.get("function"), dict) else {}
+            name = str(fn.get("name") or call.get("name") or "").strip()
+            args = fn.get("arguments")
+            if args is None:
+                args = call.get("arguments") if call.get("arguments") is not None else {}
+            if not name:
+                continue
+            argument_text = args if isinstance(args, str) else json.dumps(args, ensure_ascii=False)
+            calls.append(
+                {
+                    "id": str(call.get("id") or name),
+                    "name": name,
+                    "arguments": args,
+                    "wire": {
+                        "id": str(call.get("id") or name),
+                        "type": "function",
+                        "function": {"name": name, "arguments": argument_text},
+                    },
+                }
+            )
+    if calls:
+        return calls
+    legacy = msg.get("function_call")
+    if isinstance(legacy, dict) and legacy.get("name"):
+        legacy_args = legacy.get("arguments") if legacy.get("arguments") is not None else {}
+        argument_text = (
+            legacy_args if isinstance(legacy_args, str) else json.dumps(legacy_args, ensure_ascii=False)
+        )
+        return [
+            {
+                "id": "call_legacy",
+                "name": str(legacy.get("name")),
+                "arguments": legacy_args,
+                "wire": {
+                    "id": "call_legacy",
+                    "type": "function",
+                    "function": {"name": str(legacy.get("name")), "arguments": argument_text},
+                },
+            }
+        ]
+    return []
+
+
+def _strip_tool_markup(text: str) -> str:
+    cleaned = re.sub(r"```tool\s*[\s\S]*?```", "", text or "", flags=re.I)
+    cleaned = re.sub(r"<tool_call>\s*[\s\S]*?</tool_call>", "", cleaned, flags=re.I)
+    return cleaned.strip()
+
+
+def _relax_tools(mode: dict[str, bool], detail: str) -> bool:
+    low = (detail or "").lower()
+    if not any(token in low for token in ("tool", "function")):
+        return False
+    if mode.get("native", True) and mode.get("choice", True):
+        mode["choice"] = False
+        return True
+    if mode.get("native", True):
+        mode["native"] = False
+        mode["choice"] = False
+        return True
+    return False
+
+
+def _chat_completions(messages: list[dict[str, Any]], mode: dict[str, bool]) -> dict[str, Any]:
     cfg = agent_config()
     if not cfg["base_url"] or not cfg["api_key"]:
         raise RuntimeError(
             "OPENAI_BASE_URL و OPENAI_API_KEY در فایل .env تنظیم نشده‌اند."
         )
     url = f"{cfg['base_url']}/chat/completions"
-    payload = {
+    payload: dict[str, Any] = {
         "model": cfg["model"],
         "messages": messages,
-        "tools": TOOL_DEFS,
-        "tool_choice": "auto",
         "temperature": 0.2,
     }
+    if mode.get("native", True):
+        payload["tools"] = TOOL_DEFS
+        if mode.get("choice", True):
+            payload["tool_choice"] = "auto"
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
         url,
@@ -495,6 +737,8 @@ def _chat_completions(messages: list[dict[str, Any]]) -> dict[str, Any]:
     except urllib.error.HTTPError as exc:
         err_body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
         detail = err_body[:800] if err_body else str(exc)
+        if _relax_tools(mode, detail):
+            return _chat_completions(messages, mode)
         raise RuntimeError(f"API خطا داد ({exc.code}): {detail}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"اتصال به API برقرار نشد: {exc.reason}") from exc
@@ -504,6 +748,12 @@ def _chat_completions(messages: list[dict[str, Any]]) -> dict[str, Any]:
         raise RuntimeError("پاسخ API معتبر نبود.") from exc
     if not isinstance(data, dict):
         raise RuntimeError("پاسخ API معتبر نبود.")
+    err = data.get("error")
+    if err:
+        message = err.get("message") if isinstance(err, dict) else str(err)
+        if _relax_tools(mode, str(message)):
+            return _chat_completions(messages, mode)
+        raise RuntimeError(f"API خطا داد: {message}")
     return data
 
 
@@ -550,56 +800,123 @@ def run_agent_turn(user_message: str, history: list[Any] | None = None) -> dict[
 
     steps: list[dict[str, Any]] = []
     final_reply = ""
+    mode = {"native": True, "choice": True}
+    bootstrapped = False
+    seen_listing = ""
+
+    def remember_listing(name: str, ok: bool, result: str) -> None:
+        nonlocal seen_listing
+        if ok and name in ("list_dir", "ls") and not seen_listing:
+            seen_listing = result[:8000]
 
     for _ in range(MAX_AGENT_STEPS):
-        data = _chat_completions(messages)
+        data = _chat_completions(messages, mode)
         msg = _assistant_message(data)
-        tool_calls = msg.get("tool_calls")
-        content = msg.get("content")
-        if isinstance(content, str) and content.strip():
-            final_reply = content.strip()
+        content = _message_text(msg.get("content")).strip()
+        native_calls = _native_tool_calls(msg) if mode.get("native", True) else []
+        calls = native_calls or _text_tool_calls(content)
 
-        if not tool_calls:
-            break
+        if calls:
+            if native_calls:
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": content or "",
+                        "tool_calls": [call["wire"] for call in native_calls],
+                    }
+                )
+            else:
+                messages.append({"role": "assistant", "content": content or ""})
 
-        # Persist assistant tool_calls message for the provider protocol
-        assistant_entry: dict[str, Any] = {"role": "assistant", "content": content or ""}
-        if tool_calls:
-            assistant_entry["tool_calls"] = tool_calls
-        messages.append(assistant_entry)
+            for call in calls:
+                ok, result = run_tool(call["name"], call.get("arguments"))
+                summary = result if len(result) <= 240 else result[:240] + "…"
+                steps.append(
+                    {
+                        "type": "tool",
+                        "name": call["name"],
+                        "ok": ok,
+                        "summary": summary,
+                    }
+                )
+                remember_listing(call["name"], ok, result)
+                clipped = result[:50_000]
+                if native_calls:
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call["id"],
+                            "name": call["name"],
+                            "content": clipped,
+                        }
+                    )
+                else:
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": f"نتیجهٔ ابزار `{call['name']}`:\n{clipped}",
+                        }
+                    )
+            final_reply = ""
+            continue
 
-        if not isinstance(tool_calls, list):
-            break
-
-        for call in tool_calls:
-            if not isinstance(call, dict):
-                continue
-            fn = call.get("function") if isinstance(call.get("function"), dict) else {}
-            name = str(fn.get("name") or "")
-            raw_args = fn.get("arguments") or "{}"
-            ok, result = run_tool(name, raw_args)
-            summary = result if len(result) <= 240 else result[:240] + "…"
-            steps.append(
-                {
-                    "type": "tool",
-                    "name": name,
-                    "ok": ok,
-                    "summary": summary,
-                }
-            )
+        final_reply = content
+        needs_files = bool(_NO_ACCESS_RE.search(content) or _FILE_INTENT_RE.search(text))
+        if not bootstrapped and not steps and needs_files:
+            bootstrapped = True
+            try:
+                listing = tool_list_dir("")
+                listed_ok = True
+            except Exception as exc:  # noqa: BLE001 — show the real filesystem error
+                listing = f"خطا: {exc}"
+                listed_ok = False
+            summary = listing if len(listing) <= 240 else listing[:240] + "…"
+            steps.append({"type": "tool", "name": "list_dir", "ok": listed_ok, "summary": summary})
+            remember_listing("list_dir", listed_ok, listing)
+            messages.append({"role": "assistant", "content": content or ""})
             messages.append(
                 {
-                    "role": "tool",
-                    "tool_call_id": str(call.get("id") or name),
-                    "content": result[:50_000],
+                    "role": "user",
+                    "content": (
+                        "ابزارهای فایل فعال‌اند. list_dir روی ریشهٔ وردپرس اجرا شد. "
+                        "نگو به list_dir یا read_file دسترسی نداری.\n\n"
+                        f"{listing[:50_000]}\n\n"
+                        "با همین داده به کاربر جواب بده. برای خواندن یا ویرایش فایل "
+                        "حتماً بلوک ```tool بفرست. توضیح متنی هیچ فایلی را عوض نمی‌کند."
+                    ),
                 }
             )
+            final_reply = ""
+            continue
+        break
     else:
         if not final_reply:
             final_reply = "به سقف تعداد گام‌های ایجنت رسیدم. لطفاً درخواست را کوچک‌تر کنید یا دوباره بفرستید."
 
+    final_reply = _strip_tool_markup(final_reply)
+    edited = any(
+        step.get("ok") and step.get("name") in ("edit_file", "write_file", "delete_file")
+        for step in steps
+    )
+    if _NO_ACCESS_RE.search(final_reply or "") and seen_listing and not edited:
+        final_reply = (
+            "ریشهٔ وردپرس خوانده شد:\n\n"
+            + seen_listing
+            + "\n\nکدام فایل را باز یا ویرایش کنم؟"
+        )
     if not final_reply:
-        final_reply = "انجام شد، اما مدل پاسخ متنی نداد."
+        done = [
+            step
+            for step in steps
+            if step.get("ok") and step.get("name") in ("edit_file", "write_file", "delete_file")
+        ]
+        if done:
+            lines = [f"- {step['name']}: {step['summary']}" for step in done]
+            final_reply = "تغییر اعمال شد:\n" + "\n".join(lines)
+        elif seen_listing:
+            final_reply = "ریشهٔ وردپرس:\n\n" + seen_listing
+        else:
+            final_reply = "انجام شد، اما مدل پاسخ متنی نداد."
 
     return {
         "ok": True,

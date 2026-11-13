@@ -46,7 +46,7 @@ from backup_schedule import (
     restore_stored_full,
     save_backup_settings,
 )
-from agent import WORKSPACE as AGENT_WORKSPACE, agent_configured, run_agent_turn
+from agent import agent_configured, run_agent_turn
 
 app = Flask(
     __name__,
@@ -1607,7 +1607,6 @@ def chat():
             render_template(
                 "chat.html",
                 agent_ready=agent_configured(),
-                agent_workspace=str(AGENT_WORKSPACE),
             )
         )
     )
@@ -1823,3 +1822,4 @@ def security_headers(resp):
 
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=9090)
+  app.run(host="127.0.0.1", port=9090)

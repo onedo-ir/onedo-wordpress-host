@@ -2,11 +2,6 @@
 {% block title %}چت ایجنت — onedo wordpress{% endblock %}
 {% block topbar_title %}چت ایجنت{% endblock %}
 {% block body %}
-<p class="muted page-lead">
-  ایجنت روی ورک‌اسپیس وردپرس (<code class="ltr">{{ agent_workspace }}</code>) کار می‌کند.
-  API سازگار با OpenAI از <code class="ltr">.env</code> خوانده می‌شود.
-</p>
-
 {% if not agent_ready %}
 <div class="alert warn">
   ایجنت هنوز تنظیم نشده. در <code class="ltr">.env</code> مقدارهای
@@ -21,29 +16,35 @@
   data-api-url="{{ url_for('api_chat') }}"
   data-ready="{{ '1' if agent_ready else '0' }}"
 >
-  <div class="chat-toolbar">
-    <span class="chat-status" id="chat-status">
-      {% if agent_ready %}آماده{% else %}نیاز به تنظیم API{% endif %}
-    </span>
-    <button type="button" class="btn small ghost" id="chat-clear">پاک کردن گفتگو</button>
-  </div>
+  <div class="chat-progress" aria-hidden="true"><span></span></div>
 
-  <div class="chat-messages" id="chat-messages" aria-live="polite">
-    <div class="chat-bubble sys">
-      سلام. روی فایل‌های وردپرس کار می‌کنم — بگویید چه تغییری لازم است.
+  <header class="chat-head">
+    <div class="chat-ident">
+      <span class="chat-orb" aria-hidden="true"></span>
+      <div class="chat-title">ایجنت وردپرس</div>
     </div>
-  </div>
+    <div class="chat-head-tools">
+      <span class="chat-status" id="chat-status">
+        {% if agent_ready %}آماده{% else %}نیاز به تنظیم API{% endif %}
+      </span>
+      <button type="button" class="btn small ghost" id="chat-clear">گفتگوی جدید</button>
+    </div>
+  </header>
+
+  <div class="chat-messages" id="chat-messages" aria-live="polite"></div>
 
   <form class="chat-composer" id="chat-form" autocomplete="off">
     <textarea
       id="chat-input"
       class="chat-input"
       rows="2"
-      placeholder="پیام خود را بنویسید… (Enter ارسال، Shift+Enter خط جدید)"
+      placeholder="پیام خود را بنویسید… Enter ارسال، Shift+Enter خط جدید"
       {% if not agent_ready %}disabled{% endif %}
       aria-label="پیام چت"
     ></textarea>
-    <button class="btn chat-send" type="submit" {% if not agent_ready %}disabled{% endif %}>ارسال</button>
+    <button class="btn chat-send" type="submit" {% if not agent_ready %}disabled{% endif %}>
+      <span class="chat-send-label">ارسال</span>
+    </button>
   </form>
 </div>
 {% endblock %}
