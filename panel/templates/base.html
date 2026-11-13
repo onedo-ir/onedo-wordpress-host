@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="{{ url_for('static', filename='panel.css') }}?v=15">
+  <link rel="stylesheet" href="{{ url_for('static', filename='panel.css') }}?v=16">
 </head>
 <body class="{% if logged_in %}has-sidebar{% endif %}">
   {% if logged_in %}
@@ -47,6 +47,10 @@
         <a href="{{ url_for('shell') }}" class="nav-item {% if request.endpoint == 'shell' %}active{% endif %}">
           <span class="nav-ico" aria-hidden="true">›_</span>
           <span>کنسول</span>
+        </a>
+        <a href="{{ url_for('chat') }}" class="nav-item {% if request.endpoint == 'chat' %}active{% endif %}">
+          <span class="nav-ico" aria-hidden="true">◈</span>
+          <span>چت ایجنت</span>
         </a>
         <a href="{{ url_for('settings') }}" class="nav-item {% if request.endpoint == 'settings' %}active{% endif %}">
           <span class="nav-ico" aria-hidden="true">⚙</span>
@@ -88,7 +92,7 @@
   {% else %}
     {% block auth %}{% endblock %}
   {% endif %}
-  <script src="{{ url_for('static', filename='panel.js') }}?v=14" defer></script>
+  <script src="{{ url_for('static', filename='panel.js') }}?v=15" defer></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

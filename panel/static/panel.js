@@ -439,4 +439,140 @@
 
     if (input) input.focus();
   }
+
+  /* —— Agent chat room —— */
+  var chatRoot = document.getElementById("chat-room");
+  if (chatRoot) {
+    var chatApi = chatRoot.dataset.apiUrl;
+    var chatReady = chatRoot.dataset.ready === "1";
+    var chatMessages = document.getElementById("chat-messages");
+    var chatForm = document.getElementById("chat-form");
+    var chatInput = document.getElementById("chat-input");
+    var chatStatus = document.getElementById("chat-status");
+    var chatClear = document.getElementById("chat-clear");
+    var chatHistory = [];
+    var chatBusy = false;
+
+    function setChatStatus(text, kind) {
+      if (!chatStatus) return;
+      chatStatus.textContent = text;
+      chatStatus.classList.remove("busy", "err");
+      if (kind) chatStatus.classList.add(kind);
+    }
+
+    function scrollChat() {
+      if (chatMessages) chatMessages.scrollTop = chatMessages.scrollHeight;
+    }
+
+    function appendBubble(role, text) {
+      var el = document.createElement("div");
+      el.className = "chat-bubble " + role;
+      el.textContent = text;
+      chatMessages.appendChild(el);
+      scrollChat();
+      return el;
+    }
+
+    function appendSteps(steps) {
+      if (!steps || !steps.length) return;
+      var wrap = document.createElement("div");
+      wrap.className = "chat-steps";
+      steps.forEach(function (step) {
+        var chip = document.createElement("span");
+        chip.className = "chat-step " + (step.ok ? "ok" : "fail");
+        chip.textContent = (step.name || "tool") + (step.ok ? " ok" : " fail");
+        chip.title = step.summary || "";
+        wrap.appendChild(chip);
+      });
+      chatMessages.appendChild(wrap);
+      scrollChat();
+    }
+
+    function setChatBusy(on) {
+      chatBusy = on;
+      if (chatInput) chatInput.disabled = on || !chatReady;
+      var btn = chatForm && chatForm.querySelector(".chat-send");
+      if (btn) btn.disabled = on || !chatReady;
+    }
+
+    function sendChat(text) {
+      text = (text || "").trim();
+      if (!text || chatBusy || !chatReady) return;
+
+      appendBubble("user", text);
+      chatHistory.push({ role: "user", content: text });
+      if (chatHistory.length > 40) chatHistory = chatHistory.slice(-40);
+      if (chatInput) chatInput.value = "";
+      setChatBusy(true);
+      setChatStatus("در حال اجرا…", "busy");
+
+      var payloadHistory = chatHistory.slice(0, -1);
+
+      fetch(chatApi, {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ message: text, history: payloadHistory }),
+      })
+        .then(function (r) {
+          return r.json().then(function (data) {
+            return { okHttp: r.ok, data: data || {} };
+          });
+        })
+        .then(function (res) {
+          var data = res.data;
+          appendSteps(data.steps);
+          if (data.ok && data.reply) {
+            appendBubble("assistant", data.reply);
+            chatHistory.push({ role: "assistant", content: data.reply });
+            setChatStatus("آماده", null);
+          } else {
+            var err = data.error || "پاسخ نامعتبر از سرور.";
+            appendBubble("err", err);
+            setChatStatus("خطا", "err");
+            // Keep user message in history so context stays honest; no fake assistant.
+          }
+        })
+        .catch(function () {
+          appendBubble("err", "ارتباط با سرور برقرار نشد.");
+          setChatStatus("خطا", "err");
+        })
+        .finally(function () {
+          setChatBusy(false);
+          if (chatInput && chatReady) chatInput.focus();
+          scrollChat();
+        });
+    }
+
+    if (chatForm) {
+      chatForm.addEventListener("submit", function (e) {
+        e.preventDefault();
+        sendChat(chatInput && chatInput.value);
+      });
+    }
+
+    if (chatInput) {
+      chatInput.addEventListener("keydown", function (e) {
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          sendChat(chatInput.value);
+        }
+      });
+    }
+
+    if (chatClear) {
+      chatClear.addEventListener("click", function () {
+        if (chatBusy) return;
+        chatHistory = [];
+        chatMessages.innerHTML = "";
+        appendBubble("sys", "گفتگو پاک شد. درخواست جدید بفرستید.");
+        setChatStatus(chatReady ? "آماده" : "نیاز به تنظیم API", null);
+      });
+    }
+
+    if (chatInput && chatReady) chatInput.focus();
+  }
 })();

@@ -46,6 +46,7 @@ from backup_schedule import (
     restore_stored_full,
     save_backup_settings,
 )
+from agent import WORKSPACE as AGENT_WORKSPACE, agent_configured, run_agent_turn
 
 app = Flask(
     __name__,
@@ -1596,6 +1597,44 @@ def api_shell():
     if command is None:
         command = request.form.get("command") or ""
     return jsonify(run_shell_command(command))
+
+
+@app.route("/panel/chat")
+@login_required
+def chat():
+    return set_gate_cookie(
+        app.make_response(
+            render_template(
+                "chat.html",
+                agent_ready=agent_configured(),
+                agent_workspace=str(AGENT_WORKSPACE),
+            )
+        )
+    )
+
+
+@app.route("/panel/api/chat", methods=["POST"])
+@login_required
+def api_chat():
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"ok": False, "error": "درخواست نامعتبر است.", "reply": "", "steps": []}), 400
+    message = data.get("message") or ""
+    history = data.get("history") if isinstance(data.get("history"), list) else []
+    try:
+        result = run_agent_turn(str(message), history)
+    except Exception as exc:  # noqa: BLE001 — return JSON error to UI
+        return jsonify(
+            {
+                "ok": False,
+                "error": f"خطای داخلی ایجنت: {exc}",
+                "reply": "",
+                "steps": [],
+                "configured": agent_configured(),
+            }
+        ), 500
+    status = 200 if result.get("ok") else 400
+    return jsonify(result), status
 
 
 def _render_backup_page(message: str | None = None, err: str | None = None):
