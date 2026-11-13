@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -75,6 +76,10 @@ BACKUP_RESTORE_TIMEOUT = 900
 
 PANEL_SETTINGS_PATH = Path("/config/panel-settings.json")
 PANEL_PATHS_ENV = Path("/config/panel-paths.env")
+LOGIN_LOCKOUT_PATH = Path("/config/panel-login-lockout.json")
+LOGIN_MAX_FAILURES = 5
+LOGIN_LOCKOUT_SECONDS = 60 * 60
+_login_lockout_lock = threading.Lock()
 DEFAULT_FILEBROWSER_PATH = "/filebrowser"
 DEFAULT_PHPMYADMIN_PATH = "/phpmyadmin"
 DEFAULT_PHP_VERSION = os.environ.get("DEFAULT_PHP_VERSION", "8.1").strip() or "8.1"
@@ -116,6 +121,118 @@ def secure_str_eq(a: str, b: str) -> bool:
         hmac.compare_digest(ba, ba)
         return False
     return hmac.compare_digest(ba, bb)
+
+
+def client_ip() -> str:
+    forwarded = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+    if forwarded:
+        return forwarded[:64]
+    return (request.remote_addr or "unknown")[:64]
+
+
+def _empty_lockout_entry() -> dict:
+    return {"failures": 0, "locked_until": 0, "updated_at": 0}
+
+
+def _load_login_lockout() -> dict:
+    try:
+        if LOGIN_LOCKOUT_PATH.is_file():
+            data = json.loads(LOGIN_LOCKOUT_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        pass
+    return {}
+
+
+def _save_login_lockout(data: dict) -> None:
+    LOGIN_LOCKOUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = LOGIN_LOCKOUT_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(LOGIN_LOCKOUT_PATH)
+
+
+def _prune_login_lockout(data: dict, now: float) -> dict:
+    pruned: dict = {}
+    for ip, raw in data.items():
+        if not isinstance(ip, str) or not isinstance(raw, dict):
+            continue
+        try:
+            failures = int(raw.get("failures") or 0)
+            locked_until = float(raw.get("locked_until") or 0)
+            updated_at = float(raw.get("updated_at") or 0)
+        except (TypeError, ValueError):
+            continue
+        if locked_until > now:
+            pruned[ip] = {
+                "failures": max(failures, 0),
+                "locked_until": locked_until,
+                "updated_at": updated_at or now,
+            }
+            continue
+        if failures > 0 and updated_at and (now - updated_at) < LOGIN_LOCKOUT_SECONDS:
+            pruned[ip] = {
+                "failures": failures,
+                "locked_until": 0,
+                "updated_at": updated_at,
+            }
+    return pruned
+
+
+def login_lockout_remaining(ip: str) -> int:
+    """Seconds left in lockout for this IP, or 0 if not locked."""
+    now = time.time()
+    with _login_lockout_lock:
+        data = _prune_login_lockout(_load_login_lockout(), now)
+        entry = data.get(ip) or _empty_lockout_entry()
+        locked_until = float(entry.get("locked_until") or 0)
+        remaining = int(locked_until - now)
+        if remaining > 0:
+            return remaining
+        return 0
+
+
+def record_login_failure(ip: str) -> int:
+    """Record a failed login. Returns remaining lockout seconds (0 if not locked yet)."""
+    now = time.time()
+    with _login_lockout_lock:
+        data = _prune_login_lockout(_load_login_lockout(), now)
+        entry = dict(data.get(ip) or _empty_lockout_entry())
+        locked_until = float(entry.get("locked_until") or 0)
+        if locked_until > now:
+            remaining = int(locked_until - now)
+            _save_login_lockout(data)
+            return max(remaining, 1)
+
+        failures = int(entry.get("failures") or 0) + 1
+        entry["failures"] = failures
+        entry["updated_at"] = now
+        if failures >= LOGIN_MAX_FAILURES:
+            entry["locked_until"] = now + LOGIN_LOCKOUT_SECONDS
+            entry["failures"] = 0
+            remaining = LOGIN_LOCKOUT_SECONDS
+        else:
+            entry["locked_until"] = 0
+            remaining = 0
+        data[ip] = entry
+        _save_login_lockout(data)
+        return remaining
+
+
+def clear_login_failures(ip: str) -> None:
+    now = time.time()
+    with _login_lockout_lock:
+        data = _prune_login_lockout(_load_login_lockout(), now)
+        if ip in data:
+            data.pop(ip, None)
+            _save_login_lockout(data)
+
+
+def login_lockout_message(remaining_seconds: int) -> str:
+    minutes = max(1, (remaining_seconds + 59) // 60)
+    return (
+        f"به دلیل ۵ تلاش ناموفق، ورود برای حدود {minutes} دقیقه مسدود است."
+    )
 
 
 def gate_token() -> str:
@@ -1117,13 +1234,18 @@ def login():
         return redirect(url_for("dashboard"))
 
     error = None
-    if request.method == "POST":
+    ip = client_ip()
+    remaining = login_lockout_remaining(ip)
+    if remaining > 0:
+        error = login_lockout_message(remaining)
+    elif request.method == "POST":
         user = (request.form.get("username") or "").strip()
         password = request.form.get("password") or ""
         expected_pass = panel_pass()
         ok_user = secure_str_eq(user, panel_user())
         ok_pass = secure_str_eq(password, expected_pass) if expected_pass else False
         if ok_user and ok_pass:
+            clear_login_failures(ip)
             session["panel_ok"] = True
             session.permanent = True
             nxt = request.args.get("next") or request.form.get("next") or url_for("dashboard")
@@ -1132,7 +1254,11 @@ def login():
                 nxt = url_for("dashboard")
             resp = redirect(nxt)
             return set_gate_cookie(resp)
-        error = "نام کاربری یا رمز عبور نادرست است."
+        lock_remaining = record_login_failure(ip)
+        if lock_remaining > 0:
+            error = login_lockout_message(lock_remaining)
+        else:
+            error = "نام کاربری یا رمز عبور نادرست است."
 
     next_url = request.args.get("next", "")
     return render_template("login.html", error=error, next_url=next_url)
