@@ -2,21 +2,44 @@
 {% block title %}بکاپ — onedo wordpress{% endblock %}
 {% block topbar_title %}بکاپ و ریستور{% endblock %}
 {% block body %}
-<p class="muted page-lead">آرشیو شامل فایل‌های وردپرس (<code class="ltr">/var/www/html</code>) و دامپ دیتابیس MariaDB است.</p>
+<p class="muted page-lead">بکاپ کامل (فایل‌های وردپرس + دیتابیس) و بکاپ ساعتی فقط-دیتابیس در <code class="ltr">/config/backups</code> ذخیره می‌شوند و قابل دانلود و ریستور هستند.</p>
 
 {% if message %}<div class="alert ok">{{ message }}</div>{% endif %}
 {% if error %}<div class="alert err">{{ error }}</div>{% endif %}
 
+{% if risk and risk.warnings %}
+<div class="alert {% if risk.level == 'danger' %}err{% else %}warn{% endif %}">
+  <strong>هشدار فضای دیسک</strong>
+  <ul class="risk-list">
+    {% for w in risk.warnings %}
+    <li>{{ w }}</li>
+    {% endfor %}
+  </ul>
+  <p class="muted" style="margin:0.5rem 0 0">برآورد نگهداری: <span class="ltr">{{ risk.estimated_human }}</span> — فضای آزاد: <span class="ltr">{{ risk.free_human }}</span></p>
+</div>
+{% endif %}
+
 <div class="grid" style="margin-top:1.25rem">
   <div class="tile">
-    <h2>دانلود بکاپ</h2>
-    <p>ساخت آرشیو <code class="ltr">.tar.gz</code> از فایل‌ها و دیتابیس و دانلود آن.</p>
-    <a class="btn" href="{{ url_for('backup_download') }}">دانلود بکاپ</a>
+    <h2>بکاپ فوری</h2>
+    <p>ساخت و دانلود فوری، یا ذخیره در آرشیو سرور.</p>
+    <div class="row-actions">
+      <a class="btn" href="{{ url_for('backup_download') }}">دانلود بکاپ کامل الان</a>
+    </div>
+    <form method="post" class="inline-actions">
+      <input type="hidden" name="action" value="run_full_now">
+      <button class="btn secondary" type="submit">ذخیره بکاپ کامل روی سرور</button>
+    </form>
+    <form method="post" class="inline-actions">
+      <input type="hidden" name="action" value="run_db_now">
+      <button class="btn secondary" type="submit">ذخیره بکاپ دیتابیس روی سرور</button>
+    </form>
     <p class="muted">ساخت آرشیو ممکن است چند دقیقه طول بکشد.</p>
   </div>
+
   <div class="tile">
-    <h2>ریستور بکاپ</h2>
-    <p>آپلود همان آرشیو بکاپ برای جایگزینی فایل‌ها و دیتابیس. این کار برگشت‌ناپذیر است.</p>
+    <h2>ریستور از فایل آپلودی</h2>
+    <p>آپلود آرشیو کامل <code class="ltr">.tar.gz</code> برای جایگزینی فایل‌ها و دیتابیس. برگشت‌ناپذیر است.</p>
     <form method="post" enctype="multipart/form-data" onsubmit="return confirm('ریستور بکاپ فایل‌ها و دیتابیس فعلی را جایگزین می‌کند. ادامه می‌دهید؟');">
       <input type="hidden" name="action" value="restore">
       <label for="backup_file">فایل بکاپ</label>
@@ -27,4 +50,182 @@
     </form>
   </div>
 </div>
+
+<div class="tile schedule-tile" style="margin-top:1.25rem">
+  <h2>زمان‌بندی خودکار</h2>
+  <p class="muted">بکاپ کامل: روزانه یا هفتگی در ساعت مشخص. بکاپ دیتابیس: هر ساعت در دقیقهٔ مشخص. ساعت‌ها بر اساس زمان سیستم کانتینر هستند. با فعال‌سازی، اولین اجرا از دورهٔ بعدی شروع می‌شود؛ برای بکاپ فوری از دکمه‌های بالا استفاده کنید.</p>
+
+  <form method="post" class="schedule-form" id="backup-schedule-form">
+    <input type="hidden" name="action" value="save_schedule">
+
+    <div class="schedule-grid">
+      <section class="schedule-block">
+        <h3>بکاپ کامل (وردپرس + دیتابیس)</h3>
+        <label class="check-row" for="full_enabled">
+          <input id="full_enabled" name="full_enabled" type="checkbox" value="1" {% if schedule.full_enabled %}checked{% endif %}>
+          <span>فعال باشد</span>
+        </label>
+
+        <label for="full_frequency">دوره</label>
+        <select id="full_frequency" name="full_frequency">
+          <option value="daily" {% if schedule.full_frequency == 'daily' %}selected{% endif %}>روزانه</option>
+          <option value="weekly" {% if schedule.full_frequency == 'weekly' %}selected{% endif %}>هفتگی</option>
+        </select>
+
+        <div class="field-row" id="full-weekday-row" {% if schedule.full_frequency != 'weekly' %}hidden{% endif %}>
+          <label for="full_weekday">روز هفته</label>
+          <select id="full_weekday" name="full_weekday">
+            {% for value, label in weekdays %}
+            <option value="{{ value }}" {% if schedule.full_weekday == value %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="field-row twin">
+          <div>
+            <label for="full_hour">ساعت</label>
+            <input id="full_hour" name="full_hour" type="number" min="0" max="23" value="{{ schedule.full_hour }}" required>
+          </div>
+          <div>
+            <label for="full_minute">دقیقه</label>
+            <input id="full_minute" name="full_minute" type="number" min="0" max="59" value="{{ schedule.full_minute }}" required>
+          </div>
+        </div>
+
+        <label for="full_retention_days">روز نگهداری</label>
+        <input id="full_retention_days" name="full_retention_days" type="number" min="1" max="365" value="{{ schedule.full_retention_days }}" required>
+        <p class="field-hint">پس از این مدت، بکاپ‌های کامل قدیمی حذف می‌شوند. برآورد واحد: <span class="ltr">{{ risk.full_unit_human }}</span></p>
+      </section>
+
+      <section class="schedule-block">
+        <h3>بکاپ ساعتی دیتابیس</h3>
+        <label class="check-row" for="db_enabled">
+          <input id="db_enabled" name="db_enabled" type="checkbox" value="1" {% if schedule.db_enabled %}checked{% endif %}>
+          <span>فعال باشد</span>
+        </label>
+
+        <label for="db_minute">دقیقه در هر ساعت</label>
+        <input id="db_minute" name="db_minute" type="number" min="0" max="59" value="{{ schedule.db_minute }}" required>
+        <p class="field-hint">مثلاً ۵ یعنی هر ساعت در دقیقهٔ ۰۵.</p>
+
+        <label for="db_retention_days">روز نگهداری</label>
+        <input id="db_retention_days" name="db_retention_days" type="number" min="1" max="90" value="{{ schedule.db_retention_days }}" required>
+        <p class="field-hint">حداکثر حدود {{ risk.db_count if schedule.db_enabled else (schedule.db_retention_days * 24) }} فایل — برآورد واحد: <span class="ltr">{{ risk.db_unit_human }}</span></p>
+      </section>
+    </div>
+
+    {% if risk.level == 'danger' or require_risk_ack %}
+    <label class="check-row risk-ack" for="ack_risk">
+      <input id="ack_risk" name="ack_risk" type="checkbox" value="1">
+      <span>می‌دانم این تنظیمات ممکن است دیسک را پر کند و می‌خواهم ذخیره شود.</span>
+    </label>
+    {% endif %}
+
+    <div class="row-actions">
+      <button class="btn" type="submit">ذخیره زمان‌بندی</button>
+    </div>
+  </form>
+</div>
+
+<div class="grid" style="margin-top:1.25rem">
+  <div class="tile">
+    <h2>آرشیو بکاپ کامل</h2>
+    {% if full_backups %}
+    <div class="backup-table-wrap">
+      <table class="backup-table">
+        <thead>
+          <tr>
+            <th>فایل</th>
+            <th>زمان</th>
+            <th>حجم</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for b in full_backups %}
+          <tr>
+            <td class="ltr">{{ b.name }}</td>
+            <td class="ltr">{{ b.mtime_label }}</td>
+            <td class="ltr">{{ b.size_human }}</td>
+            <td class="backup-actions">
+              <a class="btn small" href="{{ url_for('backup_file_download', kind='full', name=b.name) }}">دانلود</a>
+              <form method="post" onsubmit="return confirm('ریستور این بکاپ کامل، فایل‌ها و دیتابیس فعلی را جایگزین می‌کند. ادامه؟');">
+                <input type="hidden" name="action" value="restore_stored_full">
+                <input type="hidden" name="name" value="{{ b.name }}">
+                <button class="btn small danger" type="submit">ریستور</button>
+              </form>
+              <form method="post" onsubmit="return confirm('این بکاپ حذف شود؟');">
+                <input type="hidden" name="action" value="delete_stored">
+                <input type="hidden" name="kind" value="full">
+                <input type="hidden" name="name" value="{{ b.name }}">
+                <button class="btn small secondary" type="submit">حذف</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="muted">هنوز بکاپ کاملی روی سرور ذخیره نشده.</p>
+    {% endif %}
+  </div>
+
+  <div class="tile">
+    <h2>آرشیو بکاپ دیتابیس</h2>
+    {% if db_backups %}
+    <div class="backup-table-wrap">
+      <table class="backup-table">
+        <thead>
+          <tr>
+            <th>فایل</th>
+            <th>زمان</th>
+            <th>حجم</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for b in db_backups %}
+          <tr>
+            <td class="ltr">{{ b.name }}</td>
+            <td class="ltr">{{ b.mtime_label }}</td>
+            <td class="ltr">{{ b.size_human }}</td>
+            <td class="backup-actions">
+              <a class="btn small" href="{{ url_for('backup_file_download', kind='db', name=b.name) }}">دانلود</a>
+              <form method="post" onsubmit="return confirm('فقط دیتابیس از این بکاپ جایگزین می‌شود. ادامه؟');">
+                <input type="hidden" name="action" value="restore_stored_db">
+                <input type="hidden" name="name" value="{{ b.name }}">
+                <button class="btn small danger" type="submit">ریستور</button>
+              </form>
+              <form method="post" onsubmit="return confirm('این بکاپ حذف شود؟');">
+                <input type="hidden" name="action" value="delete_stored">
+                <input type="hidden" name="kind" value="db">
+                <input type="hidden" name="name" value="{{ b.name }}">
+                <button class="btn small secondary" type="submit">حذف</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="muted">هنوز بکاپ دیتابیسی روی سرور ذخیره نشده.</p>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+(function () {
+  var freq = document.getElementById("full_frequency");
+  var row = document.getElementById("full-weekday-row");
+  if (!freq || !row) return;
+  function sync() {
+    row.hidden = freq.value !== "weekly";
+  }
+  freq.addEventListener("change", sync);
+  sync();
+})();
+</script>
 {% endblock %}

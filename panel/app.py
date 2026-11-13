@@ -31,6 +31,21 @@ from flask import (
     url_for,
 )
 
+from backup_schedule import (
+    WEEKDAY_LABELS,
+    assess_backup_storage_risk,
+    create_stored_db_backup,
+    create_stored_full_backup,
+    delete_stored_backup,
+    load_backup_settings,
+    list_stored_backups,
+    parse_backup_settings_form,
+    resolve_stored_backup,
+    restore_stored_db,
+    restore_stored_full,
+    save_backup_settings,
+)
+
 app = Flask(
     __name__,
     static_url_path="/panel/static",
@@ -1445,6 +1460,25 @@ def api_shell():
     return jsonify(run_shell_command(command))
 
 
+def _render_backup_page(message: str | None = None, err: str | None = None):
+    schedule = load_backup_settings()
+    risk = assess_backup_storage_risk(schedule)
+    return set_gate_cookie(
+        app.make_response(
+            render_template(
+                "backup.html",
+                message=message,
+                error=err,
+                schedule=schedule,
+                risk=risk,
+                weekdays=WEEKDAY_LABELS,
+                full_backups=list_stored_backups("full"),
+                db_backups=list_stored_backups("db"),
+            )
+        )
+    )
+
+
 @app.route("/panel/backup", methods=["GET", "POST"])
 @login_required
 def backup():
@@ -1453,7 +1487,75 @@ def backup():
 
     if request.method == "POST":
         action = request.form.get("action") or ""
-        if action == "restore":
+        if action == "save_schedule":
+            settings, parse_err = parse_backup_settings_form(request.form)
+            if parse_err:
+                err = parse_err
+            else:
+                risk = assess_backup_storage_risk(settings)
+                if risk["level"] == "danger" and request.form.get("ack_risk") != "1":
+                    err = (
+                        "این تنظیمات ممکن است دیسک سرور را پر کند. "
+                        "هشدارها را بخوانید و در صورت اطمینان، تأیید خطر را بزنید."
+                    )
+                    # Keep drafted values visible
+                    return set_gate_cookie(
+                        app.make_response(
+                            render_template(
+                                "backup.html",
+                                message=None,
+                                error=err,
+                                schedule=settings,
+                                risk=risk,
+                                weekdays=WEEKDAY_LABELS,
+                                full_backups=list_stored_backups("full"),
+                                db_backups=list_stored_backups("db"),
+                                require_risk_ack=True,
+                            )
+                        )
+                    )
+                try:
+                    save_backup_settings(settings)
+                    message = "تنظیمات زمان‌بندی بکاپ ذخیره شد."
+                    if risk["warnings"]:
+                        message += " هشدار فضای دیسک را هم بررسی کنید."
+                except Exception as exc:  # noqa: BLE001
+                    err = f"ذخیرهٔ تنظیمات ناموفق: {exc}"
+        elif action == "run_full_now":
+            try:
+                path = create_stored_full_backup()
+                message = f"بکاپ کامل ذخیره شد: {path.name}"
+            except Exception as exc:  # noqa: BLE001
+                err = f"بکاپ کامل ناموفق: {exc}"
+        elif action == "run_db_now":
+            try:
+                path = create_stored_db_backup()
+                message = f"بکاپ دیتابیس ذخیره شد: {path.name}"
+            except Exception as exc:  # noqa: BLE001
+                err = f"بکاپ دیتابیس ناموفق: {exc}"
+        elif action == "restore_stored_full":
+            name = request.form.get("name") or ""
+            try:
+                restore_stored_full(name)
+                message = f"ریستور بکاپ کامل «{name}» انجام شد."
+            except Exception as exc:  # noqa: BLE001
+                err = f"ریستور کامل ناموفق: {exc}"
+        elif action == "restore_stored_db":
+            name = request.form.get("name") or ""
+            try:
+                restore_stored_db(name)
+                message = f"ریستور دیتابیس از «{name}» انجام شد."
+            except Exception as exc:  # noqa: BLE001
+                err = f"ریستور دیتابیس ناموفق: {exc}"
+        elif action == "delete_stored":
+            kind = request.form.get("kind") or ""
+            name = request.form.get("name") or ""
+            try:
+                delete_stored_backup(kind, name)
+                message = f"بکاپ «{name}» حذف شد."
+            except Exception as exc:  # noqa: BLE001
+                err = f"حذف ناموفق: {exc}"
+        elif action == "restore":
             uploaded = request.files.get("backup_file")
             if not uploaded or not uploaded.filename:
                 err = "فایل بکاپ انتخاب نشده."
@@ -1479,11 +1581,7 @@ def backup():
         else:
             err = "عملیات نامعتبر."
 
-    return set_gate_cookie(
-        app.make_response(
-            render_template("backup.html", message=message, error=err)
-        )
-    )
+    return _render_backup_page(message, err)
 
 
 @app.route("/panel/backup/download")
@@ -1501,15 +1599,7 @@ def backup_download():
             )
         )
     except Exception as exc:  # noqa: BLE001
-        return set_gate_cookie(
-            app.make_response(
-                render_template(
-                    "backup.html",
-                    message=None,
-                    error=f"ساخت بکاپ ناموفق: {exc}",
-                )
-            )
-        )
+        return _render_backup_page(None, f"ساخت بکاپ ناموفق: {exc}")
     finally:
         # send_file may still be streaming; schedule cleanup of old archives
         try:
@@ -1526,6 +1616,23 @@ def backup_download():
                     pass
         except OSError:
             pass
+
+
+@app.route("/panel/backup/file/<kind>/<path:name>")
+@login_required
+def backup_file_download(kind: str, name: str):
+    path = resolve_stored_backup(kind, name)
+    if path is None:
+        return _render_backup_page(None, "فایل بکاپ برای دانلود پیدا نشد.")
+    mime = "application/gzip"
+    return set_gate_cookie(
+        send_file(
+            path,
+            as_attachment=True,
+            download_name=path.name,
+            mimetype=mime,
+        )
+    )
 
 
 # Avoid open redirects from crafted Host — links use request.host_url only for same host

@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="{{ url_for('static', filename='panel.css') }}?v=13">
+  <link rel="stylesheet" href="{{ url_for('static', filename='panel.css') }}?v=14">
 </head>
 <body class="{% if logged_in %}has-sidebar{% endif %}">
   {% if logged_in %}
@@ -40,7 +40,7 @@
           <span class="nav-ico" aria-hidden="true">◆</span>
           <span>نصب وردپرس</span>
         </a>
-        <a href="{{ url_for('backup') }}" class="nav-item {% if request.endpoint in ('backup', 'backup_download') %}active{% endif %}">
+        <a href="{{ url_for('backup') }}" class="nav-item {% if request.endpoint and request.endpoint.startswith('backup') %}active{% endif %}">
           <span class="nav-ico" aria-hidden="true">⇩</span>
           <span>بکاپ</span>
         </a>
@@ -87,7 +87,7 @@
   {% else %}
     {% block auth %}{% endblock %}
   {% endif %}
-  <script src="{{ url_for('static', filename='panel.js') }}?v=12" defer></script>
+  <script src="{{ url_for('static', filename='panel.js') }}?v=14" defer></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>
