@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="{{ url_for('static', filename='panel.css') }}?v=18">
+  <link rel="stylesheet" href="{{ url_for('static', filename='panel.css') }}?v=24">
 </head>
 <body class="{% if logged_in %}has-sidebar{% endif %}">
   {% if logged_in %}
@@ -28,21 +28,21 @@
           <span class="nav-ico" aria-hidden="true">⌂</span>
           <span>خانه</span>
         </a>
-        <a href="{{ url_for('monitor') }}" class="nav-item {% if request.endpoint == 'monitor' %}active{% endif %}">
-          <span class="nav-ico" aria-hidden="true">◉</span>
-          <span>مانیتور منابع</span>
+        <a href="{{ url_for('wordpress') }}" class="nav-item {% if request.endpoint == 'wordpress' %}active{% endif %}">
+          <span class="nav-ico" aria-hidden="true">◆</span>
+          <span>وردپرس</span>
         </a>
         <a href="{{ url_for('configs') }}" class="nav-item {% if request.endpoint == 'configs' %}active{% endif %}">
           <span class="nav-ico" aria-hidden="true">✎</span>
-          <span>تنظیمات فایل‌ها</span>
-        </a>
-        <a href="{{ url_for('wordpress') }}" class="nav-item {% if request.endpoint == 'wordpress' %}active{% endif %}">
-          <span class="nav-ico" aria-hidden="true">◆</span>
-          <span>نصب وردپرس</span>
+          <span>فایل‌ها</span>
         </a>
         <a href="{{ url_for('backup') }}" class="nav-item {% if request.endpoint and request.endpoint.startswith('backup') %}active{% endif %}">
           <span class="nav-ico" aria-hidden="true">⇩</span>
           <span>بکاپ</span>
+        </a>
+        <a href="{{ url_for('monitor') }}" class="nav-item {% if request.endpoint == 'monitor' %}active{% endif %}">
+          <span class="nav-ico" aria-hidden="true">◉</span>
+          <span>منابع</span>
         </a>
         <a href="{{ url_for('shell') }}" class="nav-item {% if request.endpoint == 'shell' %}active{% endif %}">
           <span class="nav-ico" aria-hidden="true">›_</span>
@@ -50,11 +50,11 @@
         </a>
         <a href="{{ url_for('chat') }}" class="nav-item {% if request.endpoint == 'chat' %}active{% endif %}">
           <span class="nav-ico" aria-hidden="true">◈</span>
-          <span>چت ایجنت</span>
+          <span>چت</span>
         </a>
         <a href="{{ url_for('settings') }}" class="nav-item {% if request.endpoint == 'settings' %}active{% endif %}">
           <span class="nav-ico" aria-hidden="true">⚙</span>
-          <span>تنظیمات پنل</span>
+          <span>تنظیمات</span>
         </a>
         <a href="https://onedo.ir/app/tickets" class="nav-item" target="_blank" rel="noopener noreferrer">
           <span class="nav-ico" aria-hidden="true">✉</span>
@@ -92,7 +92,7 @@
   {% else %}
     {% block auth %}{% endblock %}
   {% endif %}
-  <script src="{{ url_for('static', filename='panel.js') }}?v=16" defer></script>
+  <script src="{{ url_for('static', filename='panel.js') }}?v=19" defer></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

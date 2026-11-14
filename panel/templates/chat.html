@@ -14,6 +14,8 @@
   class="chat-room"
   id="chat-room"
   data-api-url="{{ url_for('api_chat') }}"
+  data-cancel-url="{{ url_for('api_chat_cancel') }}"
+  data-chats-url="{{ url_for('api_chats') }}"
   data-ready="{{ '1' if agent_ready else '0' }}"
 >
   <div class="chat-progress" aria-hidden="true"><span></span></div>
@@ -31,20 +33,41 @@
     </div>
   </header>
 
-  <div class="chat-messages" id="chat-messages" aria-live="polite"></div>
+  <div class="chat-split">
+    <aside class="chat-list" id="chat-list" aria-label="گفتگوها">
+      <div class="chat-list-label">گفتگوها</div>
+      <div class="chat-list-items" id="chat-list-items"></div>
+    </aside>
+    <div class="chat-pane">
+      <div class="chat-messages" id="chat-messages"></div>
 
   <form class="chat-composer" id="chat-form" autocomplete="off">
     <textarea
       id="chat-input"
       class="chat-input"
       rows="2"
+      dir="rtl"
       placeholder="پیام خود را بنویسید… Enter ارسال، Shift+Enter خط جدید"
       {% if not agent_ready %}disabled{% endif %}
       aria-label="پیام چت"
     ></textarea>
-    <button class="btn chat-send" type="submit" {% if not agent_ready %}disabled{% endif %}>
-      <span class="chat-send-label">ارسال</span>
+    <button
+      class="btn chat-send"
+      type="submit"
+      aria-label="ارسال"
+      title="ارسال"
+      {% if not agent_ready %}disabled{% endif %}
+    >
+      <svg class="chat-ico chat-ico-send" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M22 2 11 13" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M22 2 15 22 11 13 2 9 22 2Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <svg class="chat-ico chat-ico-stop" viewBox="0 0 24 24" aria-hidden="true">
+        <rect x="7" y="7" width="10" height="10" rx="1.6" fill="currentColor"/>
+      </svg>
     </button>
   </form>
+    </div>
+  </div>
 </div>
 {% endblock %}

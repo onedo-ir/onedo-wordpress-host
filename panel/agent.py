@@ -6,6 +6,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import signal
+import subprocess
+import threading
+import time
 import urllib.error
 import urllib.request
 from fnmatch import fnmatch
@@ -25,6 +29,21 @@ MAX_GREP_FILE_BYTES = 1_000_000
 MAX_AGENT_STEPS = 24
 MAX_HISTORY_MESSAGES = 40
 HTTP_TIMEOUT = 120
+MAX_COMMAND_CHARS = 8_000
+MAX_COMMAND_OUTPUT = 50_000
+DEFAULT_COMMAND_TIMEOUT = 60
+MAX_COMMAND_TIMEOUT = 180
+_COMMAND_SECRET_ENV = (
+    "OPENAI_API_KEY",
+    "PANEL_PASS",
+    "PANEL_SECRET",
+    "PANEL_GATE_TOKEN",
+)
+
+
+class AgentCancelled(Exception):
+    """The panel asked this turn to stop before the next model or tool step."""
+
 
 TOOL_DEFS: list[dict[str, Any]] = [
     {
@@ -149,6 +168,36 @@ TOOL_DEFS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_command",
+            "description": (
+                "Run a shell command in the WordPress document root. "
+                "Returns stdout, stderr, and the exit code. "
+                "Use for wp-cli, php, composer, and checks. "
+                "Read and edit files with the file tools, not the shell."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "Shell command, for example: wp plugin list",
+                    },
+                    "cwd": {
+                        "type": "string",
+                        "description": "Optional directory relative to the WordPress root. Empty means the root.",
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Seconds before the command is stopped. Default 60. Maximum 180.",
+                    },
+                },
+                "required": ["command"],
+            },
+        },
+    },
 ]
 
 
@@ -182,11 +231,13 @@ def build_system_prompt() -> str:
     return (
         f"{skill.strip()}\n\n"
         "## Runtime\n\n"
-        f"- Workspace absolute path: `{WORKSPACE}` (you can list, read, and edit it now).\n"
+        f"- Workspace absolute path: `{WORKSPACE}` (you can list, read, edit, and run commands in it now).\n"
         "- Tool paths are relative to that workspace. Empty path or `.` is the root.\n"
-        "- The tools are already enabled. Do not tell the user that list_dir/read_file are missing.\n"
+        "- The tools are already enabled. Do not tell the user that list_dir, read_file, or run_command are missing.\n"
         "- Inspect with list_dir / glob_files / grep_files / read_file before edits.\n"
         "- A file changes only after write_file or edit_file succeeds.\n"
+        "- Shell commands run only through run_command. The working directory stays inside the WordPress root.\n"
+        "- A command has run only after run_command returns. Include the exit code when it matters.\n"
         "- After finishing, give a short final answer (no raw tool dumps, no ```tool blocks).\n"
     )
 
@@ -472,6 +523,200 @@ def tool_grep_files(pattern: str, path: str = "", glob: str | None = None) -> st
     return "\n".join(hits) if hits else "(نتیجه‌ای نبود)"
 
 
+def _command_timeout(value: Any) -> int:
+    if value is None or value == "":
+        return DEFAULT_COMMAND_TIMEOUT
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ValueError("مهلت باید عدد صحیح ثانیه باشد.")
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("مهلت باید عدد صحیح ثانیه باشد.") from exc
+    if seconds < 1 or seconds > MAX_COMMAND_TIMEOUT:
+        raise ValueError(f"مهلت باید بین ۱ و {MAX_COMMAND_TIMEOUT} ثانیه باشد.")
+    return seconds
+
+
+def _command_child_env() -> dict[str, str]:
+    env = os.environ.copy()
+    for key in _COMMAND_SECRET_ENV:
+        env.pop(key, None)
+    return env
+
+
+def _kill_process_group(proc: subprocess.Popen[str]) -> None:
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.terminate()
+        except OSError:
+            return
+    try:
+        proc.wait(timeout=1)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.kill()
+        except OSError:
+            return
+    try:
+        proc.wait(timeout=1)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def _read_capped(stream: Any, chunks: list[str], overflow: threading.Event) -> None:
+    total = 0
+    try:
+        while total < MAX_COMMAND_OUTPUT:
+            piece = stream.read(4096)
+            if not piece:
+                return
+            room = MAX_COMMAND_OUTPUT - total
+            chunks.append(piece[:room])
+            total += len(piece)
+            if total >= MAX_COMMAND_OUTPUT:
+                overflow.set()
+                return
+    except Exception:
+        overflow.set()
+    finally:
+        try:
+            stream.close()
+        except Exception:
+            pass
+
+
+def _format_command_result(
+    command: str,
+    cwd: str,
+    code: int | None,
+    stdout: str,
+    stderr: str,
+    *,
+    timed_out: bool,
+    truncated: bool,
+    seconds: int,
+) -> str:
+    lines = [
+        f"$ {command}",
+        f"cwd: {cwd or '.'}",
+        f"exit_code: {code if code is not None else 'نامشخص'}",
+        "stdout:\n" + (stdout.rstrip() or "(خالی)"),
+    ]
+    if stderr.strip():
+        lines.append("stderr:\n" + stderr.rstrip())
+    if truncated:
+        lines.append(f"… خروجی به {MAX_COMMAND_OUTPUT} نویسه محدود شد.")
+    if timed_out:
+        lines.append(f"دستور بعد از {seconds} ثانیه متوقف شد.")
+    return "\n".join(lines)
+
+
+def tool_run_command(
+    command: str,
+    timeout: Any = None,
+    cwd: str = "",
+    cancelled: threading.Event | None = None,
+) -> str:
+    if not isinstance(command, str):
+        raise ValueError("دستور باید متن باشد.")
+    if not isinstance(cwd, str):
+        raise ValueError("پوشهٔ کار باید متن باشد.")
+    cmd = command.strip()
+    if not cmd:
+        raise ValueError("دستور خالی است.")
+    if len(cmd) > MAX_COMMAND_CHARS:
+        raise ValueError("دستور خیلی بلند است.")
+    seconds = _command_timeout(timeout)
+    workdir = _safe_resolve(cwd or "")
+    if not workdir.is_dir():
+        raise NotADirectoryError(f"پوشهٔ کار پیدا نشد: {cwd or '.'}")
+    if _stop_requested(cancelled):
+        raise AgentCancelled()
+
+    proc = subprocess.Popen(
+        cmd,
+        shell=True,
+        cwd=str(workdir),
+        env=_command_child_env(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+        text=True,
+        errors="replace",
+        start_new_session=True,
+    )
+    stdout = proc.stdout
+    stderr = proc.stderr
+    if stdout is None or stderr is None:
+        _kill_process_group(proc)
+        raise RuntimeError("خروجی دستور در دسترس نیست.")
+
+    out_chunks: list[str] = []
+    err_chunks: list[str] = []
+    overflow = threading.Event()
+    readers = [
+        threading.Thread(target=_read_capped, args=(stdout, out_chunks, overflow), name="agent-cmd-out", daemon=True),
+        threading.Thread(target=_read_capped, args=(stderr, err_chunks, overflow), name="agent-cmd-err", daemon=True),
+    ]
+    started: list[threading.Thread] = []
+    deadline = time.monotonic() + seconds
+    timed_out = False
+    stop = False
+    try:
+        for reader in readers:
+            reader.start()
+            started.append(reader)
+        while proc.poll() is None:
+            if _stop_requested(cancelled):
+                stop = True
+                _kill_process_group(proc)
+                break
+            if overflow.is_set():
+                _kill_process_group(proc)
+                break
+            if time.monotonic() >= deadline:
+                timed_out = True
+                _kill_process_group(proc)
+                break
+            try:
+                proc.wait(timeout=0.2)
+            except subprocess.TimeoutExpired:
+                continue
+    finally:
+        if proc.poll() is None:
+            _kill_process_group(proc)
+        for reader in started:
+            reader.join(timeout=1)
+        if any(reader.is_alive() for reader in started):
+            overflow.set()
+
+    if stop or _stop_requested(cancelled):
+        raise AgentCancelled()
+
+    rendered = _format_command_result(
+        cmd,
+        _rel_display(workdir),
+        proc.returncode,
+        "".join(out_chunks),
+        "".join(err_chunks),
+        timed_out=timed_out,
+        truncated=overflow.is_set(),
+        seconds=seconds,
+    )
+    if timed_out or overflow.is_set() or proc.returncode not in (0,):
+        raise RuntimeError(rendered)
+    return rendered
+
+
 TOOL_HANDLERS = {
     "list_dir": lambda args: tool_list_dir(args.get("path") or ""),
     "read_file": lambda args: tool_read_file(
@@ -492,6 +737,11 @@ TOOL_HANDLERS = {
         args.get("pattern") or "",
         args.get("path") or "",
         args.get("glob"),
+    ),
+    "run_command": lambda args: tool_run_command(
+        args.get("command") or "",
+        args.get("timeout"),
+        args.get("cwd") or "",
     ),
 }
 
@@ -515,10 +765,20 @@ TOOL_ALIASES = {
     "project_grep": "grep_files",
     "grep": "grep_files",
     "search": "grep_files",
+    "shell": "run_command",
+    "bash": "run_command",
+    "exec": "run_command",
+    "execute": "run_command",
+    "terminal": "run_command",
+    "run_shell": "run_command",
 }
 
 
-def run_tool(name: str, arguments: dict[str, Any] | str | None) -> tuple[bool, str]:
+def run_tool(
+    name: str,
+    arguments: dict[str, Any] | str | None,
+    cancelled: threading.Event | None = None,
+) -> tuple[bool, str]:
     name = TOOL_ALIASES.get((name or "").strip(), (name or "").strip())
     if name not in TOOL_HANDLERS:
         return False, f"ابزار ناشناخته: {name}"
@@ -530,7 +790,18 @@ def run_tool(name: str, arguments: dict[str, Any] | str | None) -> tuple[bool, s
     if not isinstance(arguments, dict):
         arguments = {}
     try:
-        return True, str(TOOL_HANDLERS[name](arguments))
+        if name == "run_command":
+            output = tool_run_command(
+                arguments.get("command") or "",
+                arguments.get("timeout"),
+                arguments.get("cwd") or "",
+                cancelled,
+            )
+        else:
+            output = TOOL_HANDLERS[name](arguments)
+        return True, str(output)
+    except AgentCancelled:
+        raise
     except Exception as exc:  # noqa: BLE001 — surface tool errors to the model
         return False, f"خطا: {exc}"
 
@@ -704,7 +975,58 @@ def _relax_tools(mode: dict[str, bool], detail: str) -> bool:
     return False
 
 
-def _chat_completions(messages: list[dict[str, Any]], mode: dict[str, bool]) -> dict[str, Any]:
+def _stop_requested(cancelled: threading.Event | None) -> bool:
+    return cancelled is not None and cancelled.is_set()
+
+
+def _cancelled_payload(steps: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "cancelled": True,
+        "error": "کار ایجنت لغو شد.",
+        "reply": "",
+        "steps": steps,
+        "configured": True,
+    }
+
+
+def _read_http(req: urllib.request.Request, cancelled: threading.Event | None) -> str:
+    """Read a completion response. Stop waiting as soon as the turn is cancelled."""
+    box: dict[str, Any] = {}
+
+    def work() -> None:
+        try:
+            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+                box["raw"] = resp.read().decode("utf-8", errors="replace")
+        except Exception as exc:  # noqa: BLE001 — re-raised on the caller thread
+            box["exc"] = exc
+
+    if _stop_requested(cancelled):
+        raise AgentCancelled()
+    if cancelled is None:
+        work()
+    else:
+        thread = threading.Thread(target=work, name="agent-chat", daemon=True)
+        thread.start()
+        while thread.is_alive():
+            thread.join(0.25)
+            if _stop_requested(cancelled):
+                raise AgentCancelled()
+        if _stop_requested(cancelled):
+            raise AgentCancelled()
+    if "exc" in box:
+        raise box["exc"]
+    raw = box.get("raw")
+    if not isinstance(raw, str):
+        raise RuntimeError("پاسخ API خالی بود.")
+    return raw
+
+
+def _chat_completions(
+    messages: list[dict[str, Any]],
+    mode: dict[str, bool],
+    cancelled: threading.Event | None = None,
+) -> dict[str, Any]:
     cfg = agent_config()
     if not cfg["base_url"] or not cfg["api_key"]:
         raise RuntimeError(
@@ -732,13 +1054,14 @@ def _chat_completions(messages: list[dict[str, Any]], mode: dict[str, bool]) -> 
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
+        raw = _read_http(req, cancelled)
+    except AgentCancelled:
+        raise
     except urllib.error.HTTPError as exc:
         err_body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
         detail = err_body[:800] if err_body else str(exc)
         if _relax_tools(mode, detail):
-            return _chat_completions(messages, mode)
+            return _chat_completions(messages, mode, cancelled)
         raise RuntimeError(f"API خطا داد ({exc.code}): {detail}") from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(f"اتصال به API برقرار نشد: {exc.reason}") from exc
@@ -752,7 +1075,7 @@ def _chat_completions(messages: list[dict[str, Any]], mode: dict[str, bool]) -> 
     if err:
         message = err.get("message") if isinstance(err, dict) else str(err)
         if _relax_tools(mode, str(message)):
-            return _chat_completions(messages, mode)
+            return _chat_completions(messages, mode, cancelled)
         raise RuntimeError(f"API خطا داد: {message}")
     return data
 
@@ -767,7 +1090,11 @@ def _assistant_message(data: dict[str, Any]) -> dict[str, Any]:
     return msg
 
 
-def run_agent_turn(user_message: str, history: list[Any] | None = None) -> dict[str, Any]:
+def run_agent_turn(
+    user_message: str,
+    history: list[Any] | None = None,
+    cancelled: threading.Event | None = None,
+) -> dict[str, Any]:
     """Run one user turn with tool loop. Returns reply, steps, and errors."""
     text = (user_message or "").strip()
     if not text:
@@ -810,7 +1137,12 @@ def run_agent_turn(user_message: str, history: list[Any] | None = None) -> dict[
             seen_listing = result[:8000]
 
     for _ in range(MAX_AGENT_STEPS):
-        data = _chat_completions(messages, mode)
+        if _stop_requested(cancelled):
+            return _cancelled_payload(steps)
+        try:
+            data = _chat_completions(messages, mode, cancelled)
+        except AgentCancelled:
+            return _cancelled_payload(steps)
         msg = _assistant_message(data)
         content = _message_text(msg.get("content")).strip()
         native_calls = _native_tool_calls(msg) if mode.get("native", True) else []
@@ -829,7 +1161,12 @@ def run_agent_turn(user_message: str, history: list[Any] | None = None) -> dict[
                 messages.append({"role": "assistant", "content": content or ""})
 
             for call in calls:
-                ok, result = run_tool(call["name"], call.get("arguments"))
+                if _stop_requested(cancelled):
+                    return _cancelled_payload(steps)
+                try:
+                    ok, result = run_tool(call["name"], call.get("arguments"), cancelled)
+                except AgentCancelled:
+                    return _cancelled_payload(steps)
                 summary = result if len(result) <= 240 else result[:240] + "…"
                 steps.append(
                     {
@@ -863,6 +1200,8 @@ def run_agent_turn(user_message: str, history: list[Any] | None = None) -> dict[
         final_reply = content
         needs_files = bool(_NO_ACCESS_RE.search(content) or _FILE_INTENT_RE.search(text))
         if not bootstrapped and not steps and needs_files:
+            if _stop_requested(cancelled):
+                return _cancelled_payload(steps)
             bootstrapped = True
             try:
                 listing = tool_list_dir("")

@@ -452,6 +452,11 @@
     var chatClear = document.getElementById("chat-clear");
     var chatHistory = [];
     var chatBusy = false;
+    var chatAbort = null;
+    var chatTurnId = null;
+    var chatCancelUrl = chatRoot.dataset.cancelUrl || "";
+    var chatCancelRequested = false;
+    var chatSettled = false;
     var phraseTimer = null;
     var loadingPhrases = [
       "در حال وصل شدن به مدل…",
@@ -479,6 +484,421 @@
       return avatar;
     }
 
+    function escapeHtml(s) {
+      return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function isWordChar(ch) {
+      return !!ch && /[A-Za-z0-9_]/.test(ch);
+    }
+
+    function isEscaped(src, index) {
+      var slashes = 0;
+      var j = index - 1;
+      while (j >= 0 && src.charAt(j) === "\\") {
+        slashes += 1;
+        j -= 1;
+      }
+      return slashes % 2 === 1;
+    }
+
+    function isMdSpecial(ch) {
+      return "`*_[]!~\\".indexOf(ch) !== -1;
+    }
+
+    function safeUrl(url) {
+      var value = String(url || "").trim();
+      if (!value || /[\u0000-\u0020"'<>\\]/.test(value)) return "";
+      var proto = /^([a-z][a-z0-9+.-]*):/i.exec(value);
+      if (!proto) return "";
+      var name = proto[1].toLowerCase();
+      if (name !== "http" && name !== "https" && name !== "mailto") return "";
+      return value;
+    }
+
+    function linkify(raw) {
+      var re = /https?:\/\/[^\s<]+/g;
+      var html = "";
+      var last = 0;
+      var match;
+      while ((match = re.exec(raw))) {
+        html += escapeHtml(raw.slice(last, match.index)).replace(/\n/g, "<br>");
+        var url = match[0].replace(/[),.;:!?]+$/g, "");
+        var tail = match[0].slice(url.length);
+        var safe = safeUrl(url);
+        if (safe) {
+          html +=
+            '<a href="' +
+            escapeHtml(safe) +
+            '" target="_blank" rel="noopener noreferrer">' +
+            escapeHtml(url) +
+            "</a>";
+        } else {
+          html += escapeHtml(match[0]);
+          tail = "";
+        }
+        html += escapeHtml(tail);
+        last = match.index + match[0].length;
+      }
+      html += escapeHtml(raw.slice(last)).replace(/\n/g, "<br>");
+      return html;
+    }
+
+    function findCloser(src, openAt, marker) {
+      var from = openAt + marker.length;
+      while (from < src.length) {
+        var at = src.indexOf(marker, from);
+        if (at === -1) return -1;
+        if (at < openAt + marker.length + 1) {
+          from = at + marker.length;
+          continue;
+        }
+        var prev = src.charAt(at - 1);
+        var next = src.charAt(at + marker.length);
+        if (/\s/.test(prev) || isEscaped(src, at)) {
+          from = at + marker.length;
+          continue;
+        }
+        if (marker.charAt(0) === "_" && isWordChar(next)) {
+          from = at + marker.length;
+          continue;
+        }
+        return at;
+      }
+      return -1;
+    }
+
+    function canOpen(src, index, marker) {
+      if (isEscaped(src, index)) return false;
+      if (src.slice(index, index + marker.length) !== marker) return false;
+      var after = src.charAt(index + marker.length);
+      if (!after || /\s/.test(after)) return false;
+      if (marker.charAt(0) === "_" && isWordChar(index > 0 ? src.charAt(index - 1) : "")) {
+        return false;
+      }
+      return findCloser(src, index, marker) !== -1;
+    }
+
+    function parseLink(src, index) {
+      if (src.charAt(index) !== "[") return null;
+      var close = src.indexOf("]", index + 1);
+      if (close === -1 || src.charAt(close + 1) !== "(") return null;
+      var end = src.indexOf(")", close + 2);
+      if (end === -1) return null;
+      var rawUrl = src.slice(close + 2, end).trim();
+      var titled = /^(\S+)\s+["'].*["']$/.exec(rawUrl);
+      if (titled) rawUrl = titled[1];
+      return { text: src.slice(index + 1, close), url: rawUrl, end: end + 1 };
+    }
+
+    function renderInline(raw) {
+      var src = String(raw == null ? "" : raw);
+      var html = "";
+      var i = 0;
+      var markers = ["~~", "**", "__", "*"];
+      var tags = { "~~": "del", "**": "strong", __: "strong", "*": "em" };
+
+      while (i < src.length) {
+        if (src.charAt(i) === "\\" && i + 1 < src.length && isMdSpecial(src.charAt(i + 1))) {
+          html += escapeHtml(src.charAt(i + 1));
+          i += 2;
+          continue;
+        }
+
+        if (src.charAt(i) === "`" && !isEscaped(src, i)) {
+          var ticks = 0;
+          while (src.charAt(i + ticks) === "`") ticks += 1;
+          var fence = new Array(ticks + 1).join("`");
+          var closeCode = src.indexOf(fence, i + ticks);
+          if (closeCode !== -1) {
+            var code = src.slice(i + ticks, closeCode);
+            if (code.length >= 2 && code.charAt(0) === " " && code.charAt(code.length - 1) === " ") {
+              code = code.slice(1, -1);
+            }
+            html += "<code>" + escapeHtml(code) + "</code>";
+            i = closeCode + ticks;
+            continue;
+          }
+        }
+
+        if (src.charAt(i) === "!" && src.charAt(i + 1) === "[") {
+          var image = parseLink(src, i + 1);
+          if (image) {
+            var imgUrl = safeUrl(image.url);
+            if (imgUrl) {
+              html +=
+                '<img src="' +
+                escapeHtml(imgUrl) +
+                '" alt="' +
+                escapeHtml(image.text) +
+                '" loading="lazy" referrerpolicy="no-referrer">';
+            } else if (image.text) {
+              html += escapeHtml(image.text);
+            }
+            i = image.end;
+            continue;
+          }
+        }
+
+        if (src.charAt(i) === "[") {
+          var link = parseLink(src, i);
+          if (link) {
+            var href = safeUrl(link.url);
+            var label = renderInline(link.text);
+            if (href) {
+              html +=
+                '<a href="' +
+                escapeHtml(href) +
+                '" target="_blank" rel="noopener noreferrer">' +
+                label +
+                "</a>";
+            } else {
+              html += label;
+            }
+            i = link.end;
+            continue;
+          }
+        }
+
+        var opened = false;
+        for (var m = 0; m < markers.length; m++) {
+          var marker = markers[m];
+          if (!canOpen(src, i, marker)) continue;
+          var endMark = findCloser(src, i, marker);
+          html +=
+            "<" +
+            tags[marker] +
+            ">" +
+            renderInline(src.slice(i + marker.length, endMark)) +
+            "</" +
+            tags[marker] +
+            ">";
+          i = endMark + marker.length;
+          opened = true;
+          break;
+        }
+        if (opened) continue;
+
+        var next = i + 1;
+        while (next < src.length && !isMdSpecial(src.charAt(next))) next += 1;
+        html += linkify(src.slice(i, next));
+        i = next;
+      }
+      return html;
+    }
+
+    function isBlank(line) {
+      return /^\s*$/.test(line);
+    }
+
+    function splitCells(line) {
+      var s = line.trim();
+      if (s.indexOf("|") === -1) return [];
+      if (s.charAt(0) === "|") s = s.slice(1);
+      if (s.length && s.charAt(s.length - 1) === "|") s = s.slice(0, -1);
+      return s.split("|").map(function (cell) {
+        return cell.trim();
+      });
+    }
+
+    function isTableSep(line) {
+      var cells = splitCells(line);
+      if (!cells.length) return false;
+      for (var c = 0; c < cells.length; c++) {
+        if (!/^:?-{3,}:?$/.test(cells[c])) return false;
+      }
+      return true;
+    }
+
+    function isTableAt(lines, index) {
+      return (
+        index + 1 < lines.length &&
+        lines[index].indexOf("|") !== -1 &&
+        isTableSep(lines[index + 1])
+      );
+    }
+
+    function isBlockStart(line) {
+      return (
+        /^( {0,3})(`{3,}|~{3,})/.test(line) ||
+        /^(#{1,6})\s+\S/.test(line) ||
+        /^(\*{3,}|-{3,}|_{3,})\s*$/.test(line) ||
+        /^>\s?/.test(line) ||
+        /^[-*+]\s+\S/.test(line) ||
+        /^\d+[.)]\s+\S/.test(line)
+      );
+    }
+
+    function openingFence(line) {
+      var m = /^( {0,3})(`{3,}|~{3,})(.*)$/.exec(line);
+      if (!m) return null;
+      if (m[2].charAt(0) === "`" && m[3].indexOf("`") !== -1) return null;
+      return { mark: m[2].charAt(0), len: m[2].length, info: m[3].trim() };
+    }
+
+    function closingFence(line, open) {
+      var m = /^( {0,3})(`{3,}|~{3,})\s*$/.exec(line);
+      if (!m) return false;
+      return m[2].charAt(0) === open.mark && m[2].length >= open.len;
+    }
+
+    function renderTable(lines, index) {
+      var header = splitCells(lines[index]);
+      var rowIndex = index + 2;
+      var rows = [];
+      while (
+        rowIndex < lines.length &&
+        lines[rowIndex].indexOf("|") !== -1 &&
+        !isBlank(lines[rowIndex]) &&
+        !isBlockStart(lines[rowIndex])
+      ) {
+        rows.push(splitCells(lines[rowIndex]));
+        rowIndex += 1;
+      }
+      var table = '<div class="chat-table-wrap"><table><thead><tr>';
+      for (var h = 0; h < header.length; h++) {
+        table += "<th>" + renderInline(header[h]) + "</th>";
+      }
+      table += "</tr></thead><tbody>";
+      for (var r = 0; r < rows.length; r++) {
+        table += "<tr>";
+        var count = Math.max(header.length, rows[r].length);
+        for (var c = 0; c < count; c++) {
+          table += "<td>" + renderInline(rows[r][c] || "") + "</td>";
+        }
+        table += "</tr>";
+      }
+      table += "</tbody></table></div>";
+      return { html: table, next: rowIndex };
+    }
+
+    function renderList(lines, index, ordered) {
+      var re = ordered ? /^\d+[.)]\s+/ : /^[-*+]\s+/;
+      var items = [];
+      var cursor = index;
+      while (cursor < lines.length && re.test(lines[cursor])) {
+        items.push(lines[cursor].replace(re, ""));
+        cursor += 1;
+        while (
+          cursor < lines.length &&
+          /^ {2,}\S/.test(lines[cursor]) &&
+          !isBlockStart(lines[cursor].replace(/^ {1,3}/, ""))
+        ) {
+          items[items.length - 1] += "\n" + lines[cursor].replace(/^ +/, "");
+          cursor += 1;
+        }
+      }
+      var list = ordered ? "<ol>" : "<ul>";
+      for (var n = 0; n < items.length; n++) {
+        var body = items[n];
+        var task = /^\[([ xX])\]\s+/.exec(body);
+        var prefix = "";
+        if (!ordered && task) {
+          prefix = task[1].toLowerCase() === "x" ? "☑ " : "☐ ";
+          body = body.replace(/^\[([ xX])\]\s+/, "");
+        }
+        list += "<li>" + prefix + renderInline(body) + "</li>";
+      }
+      list += ordered ? "</ol>" : "</ul>";
+      return { html: list, next: cursor };
+    }
+
+    function renderChatMarkdown(src, depth) {
+      var lines = String(src == null ? "" : src).replace(/\r\n?/g, "\n").split("\n");
+      if ((depth || 0) > 8) return "<p>" + renderInline(lines.join("\n")) + "</p>";
+      var html = [];
+      var i = 0;
+      while (i < lines.length) {
+        if (isBlank(lines[i])) {
+          i += 1;
+          continue;
+        }
+
+        var fence = openingFence(lines[i]);
+        if (fence) {
+          var buf = [];
+          i += 1;
+          while (i < lines.length && !closingFence(lines[i], fence)) {
+            buf.push(lines[i]);
+            i += 1;
+          }
+          if (i < lines.length) i += 1;
+          var lang = (fence.info || "").split(/\s+/)[0];
+          var cls = /^[A-Za-z0-9_+.#-]{1,32}$/.test(lang) ? ' class="language-' + lang + '"' : "";
+          html.push("<pre><code" + cls + ">" + escapeHtml(buf.join("\n")) + "</code></pre>");
+          continue;
+        }
+
+        var heading = /^(#{1,6})\s+(\S.*)$/.exec(lines[i]);
+        if (heading) {
+          var level = heading[1].length;
+          html.push(
+            "<h" + level + ">" + renderInline(heading[2].replace(/\s+#+$/, "")) + "</h" + level + ">"
+          );
+          i += 1;
+          continue;
+        }
+
+        if (/^(\*{3,}|-{3,}|_{3,})\s*$/.test(lines[i])) {
+          html.push("<hr>");
+          i += 1;
+          continue;
+        }
+
+        if (/^>\s?/.test(lines[i])) {
+          var quote = [];
+          while (i < lines.length && /^>\s?/.test(lines[i])) {
+            quote.push(lines[i].replace(/^>\s?/, ""));
+            i += 1;
+          }
+          html.push(
+            "<blockquote>" + renderChatMarkdown(quote.join("\n"), (depth || 0) + 1) + "</blockquote>"
+          );
+          continue;
+        }
+
+        if (/^[-*+]\s+\S/.test(lines[i])) {
+          var ul = renderList(lines, i, false);
+          html.push(ul.html);
+          i = ul.next;
+          continue;
+        }
+
+        if (/^\d+[.)]\s+\S/.test(lines[i])) {
+          var ol = renderList(lines, i, true);
+          html.push(ol.html);
+          i = ol.next;
+          continue;
+        }
+
+        if (isTableAt(lines, i)) {
+          var table = renderTable(lines, i);
+          html.push(table.html);
+          i = table.next;
+          continue;
+        }
+
+        var para = [lines[i]];
+        i += 1;
+        while (
+          i < lines.length &&
+          !isBlank(lines[i]) &&
+          !isBlockStart(lines[i]) &&
+          !isTableAt(lines, i)
+        ) {
+          para.push(lines[i]);
+          i += 1;
+        }
+        html.push("<p>" + renderInline(para.join("\n")) + "</p>");
+      }
+      return html.join("");
+    }
+
     function appendBubble(role, text) {
       var row = document.createElement("div");
       row.className = "chat-row " + role;
@@ -494,27 +914,17 @@
       }
       var body = document.createElement("div");
       body.className = "chat-text";
-      body.textContent = text;
+      if (role === "user" || role === "assistant") {
+        body.className = "chat-text md";
+        body.innerHTML = renderChatMarkdown(text);
+      } else {
+        body.textContent = text;
+      }
       el.appendChild(body);
       row.appendChild(el);
       chatMessages.appendChild(row);
       scrollChat();
       return row;
-    }
-
-    function appendSteps(steps) {
-      if (!steps || !steps.length) return;
-      var wrap = document.createElement("div");
-      wrap.className = "chat-steps";
-      steps.forEach(function (step) {
-        var chip = document.createElement("span");
-        chip.className = "chat-step " + (step.ok ? "ok" : "fail");
-        chip.textContent = (step.name || "tool") + (step.ok ? " ok" : " fail");
-        chip.title = step.summary || "";
-        wrap.appendChild(chip);
-      });
-      chatMessages.appendChild(wrap);
-      scrollChat();
     }
 
     function hideChatLoading() {
@@ -549,6 +959,7 @@
       chatMessages.appendChild(row);
       var n = 0;
       phraseTimer = setInterval(function () {
+        if (chatCancelRequested) return;
         n = (n + 1) % loadingPhrases.length;
         var node = document.getElementById("chat-loading-text");
         if (node) node.textContent = loadingPhrases[n];
@@ -558,69 +969,440 @@
       scrollChat();
     }
 
+    function newTurnId() {
+      if (window.crypto && typeof crypto.randomUUID === "function") {
+        return crypto.randomUUID();
+      }
+      return (
+        "turn-" +
+        Date.now().toString(36) +
+        "-" +
+        Math.random().toString(36).slice(2, 12)
+      );
+    }
+
+    var chatsUrl = chatRoot.dataset.chatsUrl || "";
+    var activeChatId = "";
+    var chatIndex = [];
+    var chatLoadSeq = 0;
+    var chatShownId = "";
+    var chatsReady = false;
+
+    function chatItemUrl(id) {
+      return chatsUrl.replace(/\/$/, "") + "/" + encodeURIComponent(id);
+    }
+
+    function chatFetch(url, options) {
+      var opts = options || {};
+      var headers = { Accept: "application/json" };
+      if (opts.body) headers["Content-Type"] = "application/json";
+      return fetch(url, {
+        method: opts.method || "GET",
+        credentials: "same-origin",
+        headers: headers,
+        body: opts.body
+      }).then(function (r) {
+        return r.json().then(
+          function (data) {
+            return { ok: r.ok, status: r.status, data: data || {} };
+          },
+          function () {
+            return { ok: false, status: r.status, data: {} };
+          }
+        );
+      });
+    }
+
+    function announce(row) {
+      if (row) row.setAttribute("aria-live", "polite");
+      return row;
+    }
+
+    function titleFromText(text) {
+      var line = String(text || "").replace(/\s+/g, " ").trim();
+      if (!line) return "گفتگوی جدید";
+      if (line.length > 48) return line.slice(0, 48).replace(/\s+$/, "") + "…";
+      return line;
+    }
+
+    function findChat(id) {
+      var i;
+      for (i = 0; i < chatIndex.length; i++) {
+        if (chatIndex[i].id === id) return chatIndex[i];
+      }
+      return null;
+    }
+
+    function upsertIndex(summary) {
+      if (!summary || !summary.id) return;
+      var next = {
+        id: summary.id,
+        title: summary.title || "گفتگوی جدید",
+        updated_at: summary.updated_at || 0,
+        message_count: summary.message_count || 0
+      };
+      var found = false;
+      var i;
+      for (i = 0; i < chatIndex.length; i++) {
+        if (chatIndex[i].id !== next.id) continue;
+        chatIndex[i] = next;
+        found = true;
+        break;
+      }
+      if (!found) chatIndex.unshift(next);
+      chatIndex.sort(function (a, b) {
+        return (b.updated_at || 0) - (a.updated_at || 0);
+      });
+    }
+
+    function renderChatList() {
+      var box = document.getElementById("chat-list-items");
+      if (!box) return;
+      box.innerHTML = "";
+      chatIndex.forEach(function (item) {
+        var row = document.createElement("div");
+        row.className = "chat-thread" + (item.id === activeChatId ? " is-active" : "");
+        var open = document.createElement("button");
+        open.type = "button";
+        open.className = "chat-thread-open";
+        open.setAttribute("aria-current", item.id === activeChatId ? "true" : "false");
+        var label = item.title || "گفتگوی جدید";
+        open.title = label;
+        var span = document.createElement("span");
+        span.textContent = label;
+        open.appendChild(span);
+        open.addEventListener("click", function () {
+          openChat(item.id);
+        });
+        row.appendChild(open);
+        var onlyEmpty = chatIndex.length === 1 && !(item.message_count > 0);
+        if (!onlyEmpty) {
+          var del = document.createElement("button");
+          del.type = "button";
+          del.className = "chat-thread-delete";
+          del.setAttribute("aria-label", "حذف گفتگو");
+          del.title = "حذف گفتگو";
+          del.textContent = "×";
+          del.addEventListener("click", function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            deleteChat(item.id);
+          });
+          row.appendChild(del);
+        }
+        box.appendChild(row);
+      });
+    }
+
+    function renderThread(messages) {
+      chatHistory = [];
+      if (!chatMessages) return;
+      chatMessages.innerHTML = "";
+      var list = Array.isArray(messages) ? messages : [];
+      var i;
+      for (i = 0; i < list.length; i++) {
+        var item = list[i];
+        if (!item || (item.role !== "user" && item.role !== "assistant")) continue;
+        if (typeof item.content !== "string" || !item.content) continue;
+        appendBubble(item.role, item.content);
+        chatHistory.push({ role: item.role, content: item.content });
+      }
+      if (chatHistory.length > 40) chatHistory = chatHistory.slice(-40);
+      if (!chatHistory.length) {
+        var hint = appendBubble("sys", "این گفتگو خالی است. پیام بنویسید.");
+        if (hint) hint.id = "chat-empty";
+      }
+    }
+
+    function openChat(id, force) {
+      if (!id || chatBusy) return Promise.resolve();
+      if (!force && id === activeChatId && id === chatShownId) return Promise.resolve();
+      var seq = ++chatLoadSeq;
+      activeChatId = id;
+      chatShownId = "";
+      renderChatList();
+      return chatFetch(chatItemUrl(id)).then(function (res) {
+        if (seq !== chatLoadSeq) return;
+        if (!res.ok || !res.data.chat) {
+          chatHistory = [];
+          if (chatMessages) chatMessages.innerHTML = "";
+          announce(appendBubble("err", (res.data && res.data.error) || "این گفتگو باز نشد."));
+          return;
+        }
+        upsertIndex(res.data.chat);
+        renderThread(res.data.chat.messages || []);
+        renderChatList();
+        chatShownId = id;
+      }).catch(function () {
+        if (seq !== chatLoadSeq) return;
+        announce(appendBubble("err", "این گفتگو باز نشد."));
+      });
+    }
+
+    function createChat() {
+      if (!chatsReady || chatBusy || !chatsUrl) return;
+      var current = findChat(activeChatId);
+      if (current && !(current.message_count > 0)) {
+        if (chatInput && chatReady) chatInput.focus();
+        return;
+      }
+      var seq = ++chatLoadSeq;
+      chatFetch(chatsUrl, { method: "POST", body: "{}" }).then(function (res) {
+        if (seq !== chatLoadSeq) return;
+        if (!res.ok || !res.data.chat) {
+          announce(appendBubble("err", (res.data && res.data.error) || "گفتگوی جدید ساخته نشد."));
+          return;
+        }
+        upsertIndex(res.data.chat);
+        activeChatId = res.data.chat.id;
+        chatShownId = res.data.chat.id;
+        renderChatList();
+        renderThread(res.data.chat.messages || []);
+        if (chatInput && chatReady) chatInput.focus();
+      }).catch(function () {
+        if (seq !== chatLoadSeq) return;
+        announce(appendBubble("err", "گفتگوی جدید ساخته نشد."));
+      });
+    }
+
+    function deleteChat(id) {
+      if (!chatsReady || chatBusy || !id) return;
+      if (!window.confirm("این گفتگو حذف شود؟")) return;
+      var seq = ++chatLoadSeq;
+      chatFetch(chatItemUrl(id), { method: "DELETE" }).then(function (res) {
+        if (seq !== chatLoadSeq) return;
+        if (!res.ok || !res.data || res.data.ok !== true) {
+          announce(appendBubble("err", (res.data && res.data.error) || "حذف گفتگو انجام نشد."));
+          return;
+        }
+        chatIndex = Array.isArray(res.data.chats) ? res.data.chats : [];
+        activeChatId = res.data.active_id || (chatIndex[0] && chatIndex[0].id) || "";
+        renderChatList();
+        if (activeChatId) openChat(activeChatId, true);
+      }).catch(function () {
+        if (seq !== chatLoadSeq) return;
+        announce(appendBubble("err", "حذف گفتگو انجام نشد."));
+      });
+    }
+
+    function reloadChatIndex() {
+      if (!chatsUrl) return Promise.resolve();
+      return chatFetch(chatsUrl).then(function (res) {
+        if (!res.data || res.data.ok !== true) return;
+        chatIndex = Array.isArray(res.data.chats) ? res.data.chats : chatIndex;
+        renderChatList();
+      }).catch(function () {});
+    }
+
+    function forgetOptimisticUser() {
+      if (chatHistory.length && chatHistory[chatHistory.length - 1].role === "user") {
+        chatHistory.pop();
+      }
+      if (!chatMessages) return;
+      var rows = chatMessages.querySelectorAll(".chat-row.user");
+      var last = rows.length ? rows[rows.length - 1] : null;
+      if (last && last.parentNode) last.parentNode.removeChild(last);
+    }
+
+    function bootChats() {
+      if (!chatsUrl) {
+        chatsReady = true;
+        if (chatClear && !chatBusy) chatClear.disabled = false;
+        announce(appendBubble("err", "گفتگوها خوانده نشد."));
+        return;
+      }
+      chatFetch(chatsUrl).then(function (res) {
+        if (!res.data || res.data.ok !== true) {
+          announce(appendBubble("err", (res.data && res.data.error) || "گفتگوها خوانده نشد."));
+          return;
+        }
+        chatIndex = Array.isArray(res.data.chats) ? res.data.chats : [];
+        activeChatId = res.data.active_id || (chatIndex[0] && chatIndex[0].id) || "";
+        renderChatList();
+        if (activeChatId) return openChat(activeChatId, true);
+      }).catch(function () {
+        announce(appendBubble("err", "گفتگوها خوانده نشد."));
+      }).then(function () {
+        chatsReady = true;
+        if (chatClear && !chatBusy) chatClear.disabled = false;
+      });
+    }
+
     function setChatBusy(on) {
       chatBusy = on;
       chatRoot.classList.toggle("is-busy", on);
       chatRoot.setAttribute("aria-busy", on ? "true" : "false");
       if (chatInput) chatInput.disabled = on || !chatReady;
+      if (chatClear) chatClear.disabled = on || !chatsReady;
       var btn = chatForm && chatForm.querySelector(".chat-send");
       if (btn) {
-        btn.disabled = on || !chatReady;
-        btn.classList.toggle("is-loading", on);
-        var label = btn.querySelector(".chat-send-label");
-        if (label) label.textContent = on ? "در حال کار" : "ارسال";
+        btn.disabled = !chatReady;
+        btn.classList.toggle("is-cancel", on);
+        var label = on ? "لغو کار ایجنت" : "ارسال";
+        btn.setAttribute("aria-label", label);
+        btn.title = label;
       }
       if (on) showChatLoading();
       else hideChatLoading();
     }
 
-    function sendChat(text) {
-      text = (text || "").trim();
-      if (!text || chatBusy || !chatReady) return;
-
-      appendBubble("user", text);
-      chatHistory.push({ role: "user", content: text });
-      if (chatHistory.length > 40) chatHistory = chatHistory.slice(-40);
-      if (chatInput) chatInput.value = "";
-      setChatBusy(true);
-      setChatStatus("در حال وصل شدن به مدل…", "busy");
-
-      var payloadHistory = chatHistory.slice(0, -1);
-
-      fetch(chatApi, {
+    function cancelChat() {
+      if (!chatBusy || chatCancelRequested) return;
+      chatCancelRequested = true;
+      setChatStatus("در حال لغو…", "busy");
+      var loadingText = document.getElementById("chat-loading-text");
+      if (loadingText) loadingText.textContent = "در حال لغو…";
+      var id = chatTurnId;
+      if (!id || !chatCancelUrl) {
+        if (chatAbort) chatAbort.abort();
+        return;
+      }
+      fetch(chatCancelUrl, {
         method: "POST",
         credentials: "same-origin",
         headers: {
           Accept: "application/json",
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ message: text, history: payloadHistory }),
+        body: JSON.stringify({ turn_id: id }),
+      })
+        .then(function (r) {
+          if (!r.ok && !chatSettled && chatAbort) chatAbort.abort();
+        })
+        .catch(function () {
+          if (!chatSettled && chatAbort) chatAbort.abort();
+        });
+    }
+
+    function threadHasTurn(messages, sent) {
+      var n = messages.length;
+      if (!n) return "";
+      var last = messages[n - 1];
+      if (last && last.role === "user" && last.content === sent) return "user";
+      if (n >= 2) {
+        var prev = messages[n - 2];
+        if (
+          prev &&
+          prev.role === "user" &&
+          prev.content === sent &&
+          last &&
+          last.role === "assistant"
+        ) {
+          return "assistant";
+        }
+      }
+      return "";
+    }
+
+    function sendChat(text) {
+      text = (text || "").trim();
+      if (!text || chatBusy || !chatReady || !activeChatId) return;
+      var sentChatId = activeChatId;
+      var empty = document.getElementById("chat-empty");
+      if (empty && empty.parentNode) empty.parentNode.removeChild(empty);
+
+      announce(appendBubble("user", text));
+      chatHistory.push({ role: "user", content: text });
+      if (chatHistory.length > 40) chatHistory = chatHistory.slice(-40);
+      var listed = findChat(sentChatId);
+      if (listed) {
+        if (!listed.title || listed.title === "گفتگوی جدید") listed.title = titleFromText(text);
+        listed.message_count = (listed.message_count || 0) + 1;
+        listed.updated_at = Date.now() / 1000;
+        renderChatList();
+      }
+      if (chatInput) chatInput.value = "";
+      chatCancelRequested = false;
+      chatSettled = false;
+      chatTurnId = newTurnId();
+      chatAbort = new AbortController();
+      setChatBusy(true);
+      setChatStatus("در حال وصل شدن به مدل…", "busy");
+
+      fetch(chatApi, {
+        method: "POST",
+        credentials: "same-origin",
+        signal: chatAbort.signal,
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          message: text,
+          chat_id: sentChatId,
+          turn_id: chatTurnId,
+        }),
       })
         .then(function (r) {
           return r.json().then(function (data) {
-            return { okHttp: r.ok, data: data || {} };
+            return { data: data || {} };
           });
         })
         .then(function (res) {
+          if (chatSettled) return;
+          chatSettled = true;
           var data = res.data;
           hideChatLoading();
-          appendSteps(data.steps);
-          if (data.ok && data.reply) {
-            appendBubble("assistant", data.reply);
-            chatHistory.push({ role: "assistant", content: data.reply });
-            setChatStatus("آماده", null);
-          } else {
-            var err = data.error || "پاسخ نامعتبر از سرور.";
-            appendBubble("err", err);
-            setChatStatus("خطا", "err");
+          if (data.chat) {
+            upsertIndex(data.chat);
+            renderChatList();
           }
-        })
-        .catch(function () {
-          hideChatLoading();
-          appendBubble("err", "ارتباط با سرور برقرار نشد.");
+          if (data.cancelled || (chatCancelRequested && !(data.ok && data.reply))) {
+            announce(appendBubble("sys", "کار ایجنت لغو شد."));
+            setChatStatus(chatReady ? "آماده" : "نیاز به تنظیم API", null);
+            return;
+          }
+          if (data.ok && data.reply) {
+            announce(appendBubble("assistant", data.reply));
+            chatHistory.push({ role: "assistant", content: data.reply });
+            if (chatHistory.length > 40) chatHistory = chatHistory.slice(-40);
+            setChatStatus("آماده", null);
+            return;
+          }
+          if (!data.chat) {
+            forgetOptimisticUser();
+            return reloadChatIndex().then(function () {
+              announce(appendBubble("err", data.error || "پاسخ نامعتبر از سرور."));
+              setChatStatus("خطا", "err");
+            });
+          }
+          announce(appendBubble("err", data.error || "پاسخ نامعتبر از سرور."));
           setChatStatus("خطا", "err");
         })
+        .catch(function (err) {
+          if (chatSettled) return;
+          chatSettled = true;
+          hideChatLoading();
+          if (chatCancelRequested || (err && err.name === "AbortError")) {
+            announce(appendBubble("sys", "کار ایجنت لغو شد."));
+            setChatStatus(chatReady ? "آماده" : "نیاز به تنظیم API", null);
+            return;
+          }
+          return chatFetch(chatItemUrl(sentChatId)).then(function (res) {
+            var messages = (res.data && res.data.chat && res.data.chat.messages) || [];
+            var kept = "";
+            if (activeChatId === sentChatId && res.data && res.data.chat) {
+              upsertIndex(res.data.chat);
+              renderThread(messages);
+              renderChatList();
+              chatShownId = sentChatId;
+              kept = threadHasTurn(messages, text);
+            }
+            if (!kept && chatInput && !chatInput.value) chatInput.value = text;
+            if (kept === "assistant") {
+              setChatStatus(chatReady ? "آماده" : "نیاز به تنظیم API", null);
+            } else {
+              announce(appendBubble("err", "ارتباط با سرور برقرار نشد."));
+              setChatStatus("خطا", "err");
+            }
+          }, function () {
+            announce(appendBubble("err", "ارتباط با سرور برقرار نشد."));
+            setChatStatus("خطا", "err");
+          });
+        })
         .finally(function () {
+          chatAbort = null;
+          chatTurnId = null;
           setChatBusy(false);
           if (chatInput && chatReady) chatInput.focus();
           scrollChat();
@@ -630,6 +1412,10 @@
     if (chatForm) {
       chatForm.addEventListener("submit", function (e) {
         e.preventDefault();
+        if (chatBusy) {
+          cancelChat();
+          return;
+        }
         sendChat(chatInput && chatInput.value);
       });
     }
@@ -644,15 +1430,13 @@
     }
 
     if (chatClear) {
+      chatClear.disabled = true;
       chatClear.addEventListener("click", function () {
-        if (chatBusy) return;
-        chatHistory = [];
-        chatMessages.innerHTML = "";
-        appendBubble("sys", "گفتگو پاک شد. درخواست جدید بفرستید.");
-        setChatStatus(chatReady ? "آماده" : "نیاز به تنظیم API", null);
+        createChat();
       });
     }
 
+    bootChats();
     if (chatInput && chatReady) chatInput.focus();
   }
 })();

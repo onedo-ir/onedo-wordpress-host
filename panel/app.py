@@ -8,6 +8,7 @@ import hmac
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import tarfile
@@ -46,7 +47,13 @@ from backup_schedule import (
     restore_stored_full,
     save_backup_settings,
 )
-from agent import agent_configured, run_agent_turn
+from agent import (
+    MAX_HISTORY_MESSAGES,
+    AgentCancelled,
+    _normalize_history,
+    agent_configured,
+    run_agent_turn,
+)
 
 app = Flask(
     __name__,
@@ -77,6 +84,7 @@ BACKUP_RESTORE_TIMEOUT = 900
 
 PANEL_SETTINGS_PATH = Path("/config/panel-settings.json")
 PANEL_PATHS_ENV = Path("/config/panel-paths.env")
+CHAT_STORE_PATH = Path("/config/panel-chats.json")
 LOGIN_LOCKOUT_PATH = Path("/config/panel-login-lockout.json")
 LOGIN_MAX_FAILURES = 5
 LOGIN_LOCKOUT_SECONDS = 60 * 60
@@ -1599,6 +1607,298 @@ def api_shell():
     return jsonify(run_shell_command(command))
 
 
+_CHAT_TURNS: dict[str, threading.Event] = {}
+_CHAT_TURNS_LOCK = threading.Lock()
+_TURN_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,80}$")
+
+
+def _register_chat_turn(turn_id: str) -> threading.Event:
+    with _CHAT_TURNS_LOCK:
+        event = _CHAT_TURNS.get(turn_id)
+        if event is None:
+            event = threading.Event()
+            if len(_CHAT_TURNS) > 40:
+                for key in list(_CHAT_TURNS)[:20]:
+                    _CHAT_TURNS.pop(key, None)
+            _CHAT_TURNS[turn_id] = event
+        return event
+
+
+def _cancel_chat_turn(turn_id: str) -> None:
+    with _CHAT_TURNS_LOCK:
+        event = _CHAT_TURNS.get(turn_id)
+        if event is None:
+            event = threading.Event()
+            if len(_CHAT_TURNS) > 40:
+                for key in list(_CHAT_TURNS)[:20]:
+                    _CHAT_TURNS.pop(key, None)
+            _CHAT_TURNS[turn_id] = event
+        event.set()
+
+
+def _finish_chat_turn(turn_id: str) -> None:
+    with _CHAT_TURNS_LOCK:
+        _CHAT_TURNS.pop(turn_id, None)
+
+
+CHAT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,80}$")
+MAX_STORED_CHATS = 40
+DEFAULT_CHAT_TITLE = "گفتگوی جدید"
+_chat_store_lock = threading.Lock()
+_chat_running: set[str] = set()
+
+
+class _ChatStoreError(Exception):
+    def __init__(self, message: str, status: int) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+def _fresh_chat_id(store: dict) -> str:
+    used = {chat["id"] for chat in store.get("chats") or []}
+    for _ in range(8):
+        chat_id = secrets.token_urlsafe(12)
+        if CHAT_ID_RE.fullmatch(chat_id) and chat_id not in used:
+            return chat_id
+    chat_id = secrets.token_hex(16)
+    while chat_id in used:
+        chat_id = secrets.token_hex(16)
+    return chat_id
+
+
+def _title_from_text(text: str) -> str:
+    line = " ".join(text.split())
+    if not line:
+        return DEFAULT_CHAT_TITLE
+    if len(line) > 48:
+        return line[:48].rstrip() + "…"
+    return line
+
+
+def _is_default_title(title: str) -> bool:
+    return " ".join((title or "").split()) in ("", DEFAULT_CHAT_TITLE)
+
+
+def _as_timestamp(value: object) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _sanitize_chat(raw: object) -> dict | None:
+    if not isinstance(raw, dict):
+        return None
+    chat_id = raw.get("id")
+    if not isinstance(chat_id, str) or not CHAT_ID_RE.fullmatch(chat_id):
+        return None
+    title = raw.get("title") if isinstance(raw.get("title"), str) else DEFAULT_CHAT_TITLE
+    title = " ".join(title.split())[:80] or DEFAULT_CHAT_TITLE
+    raw_messages = raw.get("messages") if isinstance(raw.get("messages"), list) else []
+    created = _as_timestamp(raw.get("created_at"))
+    updated = _as_timestamp(raw.get("updated_at"))
+    if updated <= 0:
+        updated = created or time.time()
+    if created <= 0:
+        created = updated
+    return {
+        "id": chat_id,
+        "title": title,
+        "created_at": created,
+        "updated_at": updated,
+        "messages": _normalize_history(raw_messages),
+    }
+
+
+def _sanitize_store(data: dict) -> dict:
+    chats: list[dict] = []
+    index: dict[str, int] = {}
+    raw_chats = data.get("chats")
+    if isinstance(raw_chats, list):
+        for raw in raw_chats:
+            chat = _sanitize_chat(raw)
+            if chat is None:
+                continue
+            pos = index.get(chat["id"])
+            if pos is None:
+                index[chat["id"]] = len(chats)
+                chats.append(chat)
+            elif chat["updated_at"] >= chats[pos]["updated_at"]:
+                chats[pos] = chat
+    chats.sort(key=lambda item: item["updated_at"], reverse=True)
+    del chats[MAX_STORED_CHATS:]
+    active = data.get("active_id")
+    known = {item["id"] for item in chats}
+    if not isinstance(active, str) or active not in known:
+        active = chats[0]["id"] if chats else ""
+    return {"active_id": active, "chats": chats}
+
+
+def _load_chat_store() -> dict:
+    try:
+        if CHAT_STORE_PATH.is_file():
+            data = json.loads(CHAT_STORE_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return _sanitize_store(data)
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        pass
+    return {"active_id": "", "chats": []}
+
+
+def _save_chat_store(store: dict) -> None:
+    CHAT_STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "active_id": store.get("active_id") or "",
+        "chats": store.get("chats") or [],
+    }
+    tmp = CHAT_STORE_PATH.with_suffix(".tmp")
+    tmp.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    tmp.replace(CHAT_STORE_PATH)
+
+
+def _chat_summary(chat: dict) -> dict:
+    messages = chat.get("messages") if isinstance(chat.get("messages"), list) else []
+    return {
+        "id": chat["id"],
+        "title": chat.get("title") or DEFAULT_CHAT_TITLE,
+        "updated_at": chat.get("updated_at") or 0,
+        "message_count": len(messages),
+    }
+
+
+def _chat_detail(chat: dict) -> dict:
+    detail = _chat_summary(chat)
+    detail["messages"] = list(chat.get("messages") or [])
+    return detail
+
+
+def _find_chat(store: dict, chat_id: str) -> dict | None:
+    for chat in store["chats"]:
+        if chat["id"] == chat_id:
+            return chat
+    return None
+
+
+def _sort_chats(store: dict) -> None:
+    store["chats"].sort(key=lambda item: item.get("updated_at") or 0, reverse=True)
+
+
+def _blank_chat(store: dict) -> dict:
+    now = time.time()
+    return {
+        "id": _fresh_chat_id(store),
+        "title": DEFAULT_CHAT_TITLE,
+        "created_at": now,
+        "updated_at": now,
+        "messages": [],
+    }
+
+
+def _list_chats() -> dict:
+    with _chat_store_lock:
+        store = _load_chat_store()
+        if not store["chats"]:
+            chat = _blank_chat(store)
+            store["chats"] = [chat]
+            store["active_id"] = chat["id"]
+            _save_chat_store(store)
+        return store
+
+
+def _create_chat() -> dict:
+    with _chat_store_lock:
+        store = _load_chat_store()
+        if len(store["chats"]) >= MAX_STORED_CHATS:
+            raise _ChatStoreError(
+                "تعداد گفتگوها به سقف ۴۰ رسیده است. یکی را حذف کنید.",
+                400,
+            )
+        chat = _blank_chat(store)
+        store["chats"].insert(0, chat)
+        store["active_id"] = chat["id"]
+        _sort_chats(store)
+        _save_chat_store(store)
+        return chat
+
+
+def _open_chat(chat_id: str) -> dict:
+    with _chat_store_lock:
+        store = _load_chat_store()
+        chat = _find_chat(store, chat_id)
+        if chat is None:
+            raise _ChatStoreError("این گفتگو پیدا نشد.", 404)
+        if store["active_id"] != chat_id:
+            store["active_id"] = chat_id
+            _save_chat_store(store)
+        return chat
+
+
+def _delete_chat(chat_id: str) -> dict:
+    with _chat_store_lock:
+        if chat_id in _chat_running:
+            raise _ChatStoreError("این گفتگو هنوز در حال پاسخ است.", 409)
+        store = _load_chat_store()
+        kept = [chat for chat in store["chats"] if chat["id"] != chat_id]
+        if len(kept) == len(store["chats"]):
+            raise _ChatStoreError("این گفتگو پیدا نشد.", 404)
+        store["chats"] = kept
+        if not store["chats"]:
+            chat = _blank_chat(store)
+            store["chats"] = [chat]
+            store["active_id"] = chat["id"]
+        elif store["active_id"] == chat_id:
+            store["active_id"] = store["chats"][0]["id"]
+        _sort_chats(store)
+        _save_chat_store(store)
+        return store
+
+
+def _begin_chat_turn(chat_id: str, text: str) -> list[dict[str, str]]:
+    """Append the user message and return the older turns of this chat only."""
+    with _chat_store_lock:
+        if chat_id in _chat_running:
+            raise _ChatStoreError("این گفتگو هنوز در حال پاسخ است.", 409)
+        store = _load_chat_store()
+        chat = _find_chat(store, chat_id)
+        if chat is None:
+            raise _ChatStoreError("این گفتگو پیدا نشد.", 404)
+        stored = _normalize_history(
+            list(chat["messages"]) + [{"role": "user", "content": text}]
+        )
+        if not stored or stored[-1].get("role") != "user":
+            raise _ChatStoreError("پیام خالی است.", 400)
+        history = [dict(item) for item in stored[:-1]]
+        chat["messages"] = stored
+        if _is_default_title(str(chat.get("title") or "")):
+            chat["title"] = _title_from_text(text)
+        chat["updated_at"] = time.time()
+        store["active_id"] = chat_id
+        _sort_chats(store)
+        _save_chat_store(store)
+        _chat_running.add(chat_id)
+        return history
+
+
+def _commit_chat_turn(chat_id: str, reply: str | None) -> dict | None:
+    with _chat_store_lock:
+        _chat_running.discard(chat_id)
+        store = _load_chat_store()
+        chat = _find_chat(store, chat_id)
+        if chat is None:
+            return None
+        if reply:
+            chat["messages"] = _normalize_history(
+                list(chat["messages"]) + [{"role": "assistant", "content": reply}]
+            )
+            chat["updated_at"] = time.time()
+            _sort_chats(store)
+            _save_chat_store(store)
+        return _chat_summary(chat)
+
+
 @app.route("/panel/chat")
 @login_required
 def chat():
@@ -1612,27 +1912,147 @@ def chat():
     )
 
 
+@app.route("/panel/api/chat/cancel", methods=["POST"])
+@login_required
+def api_chat_cancel():
+    data = request.get_json(silent=True) or {}
+    turn_id = data.get("turn_id") if isinstance(data, dict) else None
+    turn_id = turn_id.strip() if isinstance(turn_id, str) else ""
+    if not _TURN_ID_RE.fullmatch(turn_id):
+        return jsonify({"ok": False, "error": "شناسهٔ نوبت نامعتبر است."}), 400
+    _cancel_chat_turn(turn_id)
+    return jsonify({"ok": True})
+
+
+def _chat_failure(message: str, status: int):
+    return jsonify({"ok": False, "error": message, "reply": "", "steps": []}), status
+
+
+@app.route("/panel/api/chats", methods=["GET", "POST"])
+@login_required
+def api_chats():
+    if request.method == "POST":
+        try:
+            chat = _create_chat()
+        except _ChatStoreError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), exc.status
+        return jsonify({"ok": True, "chat": _chat_detail(chat)})
+    store = _list_chats()
+    return jsonify(
+        {
+            "ok": True,
+            "active_id": store["active_id"],
+            "chats": [_chat_summary(chat) for chat in store["chats"]],
+        }
+    )
+
+
+@app.route("/panel/api/chats/<chat_id>", methods=["GET", "DELETE"])
+@login_required
+def api_chat_item(chat_id: str):
+    if not CHAT_ID_RE.fullmatch(chat_id):
+        return jsonify({"ok": False, "error": "شناسهٔ گفتگو نامعتبر است."}), 400
+    if request.method == "DELETE":
+        try:
+            store = _delete_chat(chat_id)
+        except _ChatStoreError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), exc.status
+        return jsonify(
+            {
+                "ok": True,
+                "active_id": store["active_id"],
+                "chats": [_chat_summary(chat) for chat in store["chats"]],
+            }
+        )
+    try:
+        chat = _open_chat(chat_id)
+    except _ChatStoreError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), exc.status
+    return jsonify({"ok": True, "chat": _chat_detail(chat)})
+
+
 @app.route("/panel/api/chat", methods=["POST"])
 @login_required
 def api_chat():
     data = request.get_json(silent=True) or {}
     if not isinstance(data, dict):
-        return jsonify({"ok": False, "error": "درخواست نامعتبر است.", "reply": "", "steps": []}), 400
+        return _chat_failure("درخواست نامعتبر است.", 400)
     message = data.get("message") or ""
     history = data.get("history") if isinstance(data.get("history"), list) else []
+    raw_chat = data.get("chat_id")
+    chat_id = raw_chat.strip() if isinstance(raw_chat, str) else ""
+    raw_turn = data.get("turn_id")
+    turn_id = raw_turn.strip() if isinstance(raw_turn, str) else ""
+    if turn_id and not _TURN_ID_RE.fullmatch(turn_id):
+        return _chat_failure("شناسهٔ نوبت نامعتبر است.", 400)
+    user_text = str(message)
+    if chat_id:
+        if not CHAT_ID_RE.fullmatch(chat_id):
+            return _chat_failure("شناسهٔ گفتگو نامعتبر است.", 400)
+        user_text = user_text.strip()
+        if not user_text:
+            return _chat_failure("پیام خالی است.", 400)
+        if len(user_text) > 20_000:
+            return _chat_failure("پیام خیلی بلند است.", 400)
+
+    cancelled = _register_chat_turn(turn_id) if turn_id else None
+    started = False
+    result: dict | None = None
+    status = 200
+    store_error: _ChatStoreError | None = None
     try:
-        result = run_agent_turn(str(message), history)
-    except Exception as exc:  # noqa: BLE001 — return JSON error to UI
-        return jsonify(
-            {
+        if chat_id:
+            # Memory is this chat's stored transcript, not the browser payload.
+            history = _begin_chat_turn(chat_id, user_text)
+            started = True
+        try:
+            result = run_agent_turn(user_text, history, cancelled=cancelled)
+        except AgentCancelled:
+            result = {
                 "ok": False,
-                "error": f"خطای داخلی ایجنت: {exc}",
+                "cancelled": True,
+                "error": "کار ایجنت لغو شد.",
                 "reply": "",
                 "steps": [],
                 "configured": agent_configured(),
             }
-        ), 500
-    status = 200 if result.get("ok") else 400
+    except _ChatStoreError as exc:
+        store_error = exc
+    except Exception as exc:  # noqa: BLE001 — return JSON error to UI
+        result = {
+            "ok": False,
+            "error": f"خطای داخلی ایجنت: {exc}",
+            "reply": "",
+            "steps": [],
+            "configured": agent_configured(),
+        }
+        status = 500
+    finally:
+        if turn_id:
+            _finish_chat_turn(turn_id)
+
+    if store_error is not None:
+        return _chat_failure(str(store_error), store_error.status)
+
+    if started:
+        reply = ""
+        if isinstance(result, dict) and result.get("ok"):
+            raw_reply = result.get("reply")
+            if isinstance(raw_reply, str):
+                reply = raw_reply.strip()
+        try:
+            meta = _commit_chat_turn(chat_id, reply or None)
+        except Exception:
+            with _chat_store_lock:
+                _chat_running.discard(chat_id)
+            meta = None
+        if isinstance(result, dict) and meta:
+            result["chat"] = meta
+
+    if not isinstance(result, dict):
+        return _chat_failure("خطای داخلی ایجنت.", 500)
+    if status == 200 and not (result.get("ok") or result.get("cancelled")):
+        status = 400
     return jsonify(result), status
 
 
