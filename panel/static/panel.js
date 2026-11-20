@@ -1294,6 +1294,110 @@
       return "";
     }
 
+    function delay(ms) {
+      return new Promise(function (resolve) {
+        setTimeout(resolve, ms);
+      });
+    }
+
+    /* When the long chat POST drops (proxy/browser), the agent often still
+       finishes on the server. Poll until the reply lands or the turn ends. */
+    function recoverDroppedTurn(chatId, sentText) {
+      var maxAttempts = 90;
+      var intervalMs = 2000;
+
+      function chatStillRunning(res) {
+        if (!res || !res.data) return false;
+        if (res.data.running === true) return true;
+        if (res.data.chat && res.data.chat.running === true) return true;
+        return false;
+      }
+
+      function poll(attempt) {
+        if (chatCancelRequested) {
+          return Promise.resolve({ outcome: "cancelled" });
+        }
+        return chatFetch(chatItemUrl(chatId)).then(
+          function (res) {
+            if (chatCancelRequested) {
+              return { outcome: "cancelled" };
+            }
+            var messages =
+              (res.ok && res.data && res.data.chat && res.data.chat.messages) || [];
+            var kept = threadHasTurn(messages, sentText);
+            if (kept === "assistant") {
+              if (activeChatId === chatId && res.data && res.data.chat) {
+                upsertIndex(res.data.chat);
+                renderThread(messages);
+                renderChatList();
+                chatShownId = chatId;
+              }
+              return { outcome: "assistant" };
+            }
+            if (chatCancelRequested) {
+              return { outcome: "cancelled" };
+            }
+            var running = chatStillRunning(res);
+            if (!running && kept === "user") {
+              return { outcome: "failed", kept: kept };
+            }
+            if (!running && attempt >= 2) {
+              return { outcome: "failed", kept: kept };
+            }
+            if (attempt >= maxAttempts) {
+              return { outcome: "timeout", kept: kept };
+            }
+            setChatStatus("ارتباط موقتاً قطع شد؛ در حال بازیابی پاسخ…", "busy");
+            var loadingText = document.getElementById("chat-loading-text");
+            if (loadingText) {
+              loadingText.textContent = "ارتباط موقتاً قطع شد؛ در حال بازیابی پاسخ…";
+            } else {
+              showChatLoading();
+              loadingText = document.getElementById("chat-loading-text");
+              if (loadingText) {
+                loadingText.textContent =
+                  "ارتباط موقتاً قطع شد؛ در حال بازیابی پاسخ…";
+              }
+            }
+            return delay(intervalMs).then(function () {
+              return poll(attempt + 1);
+            });
+          },
+          function () {
+            if (chatCancelRequested) return { outcome: "cancelled" };
+            if (attempt >= maxAttempts) {
+              return { outcome: "timeout" };
+            }
+            setChatStatus("ارتباط موقتاً قطع شد؛ در حال بازیابی پاسخ…", "busy");
+            return delay(intervalMs).then(function () {
+              return poll(attempt + 1);
+            });
+          }
+        );
+      }
+
+      showChatLoading();
+      setChatStatus("ارتباط موقتاً قطع شد؛ در حال بازیابی پاسخ…", "busy");
+      return poll(0).then(function (result) {
+        hideChatLoading();
+        var outcome = (result && result.outcome) || "failed";
+        if (outcome === "assistant") {
+          setChatStatus(chatReady ? "آماده" : "نیاز به تنظیم API", null);
+          return;
+        }
+        if (outcome === "cancelled") {
+          announce(appendBubble("sys", "کار ایجنت لغو شد."));
+          setChatStatus(chatReady ? "آماده" : "نیاز به تنظیم API", null);
+          return;
+        }
+        if (!(result && result.kept) && chatInput && !chatInput.value) {
+          chatInput.value = sentText;
+        }
+        announce(appendBubble("err", "ارتباط با سرور برقرار نشد."));
+        setChatStatus("خطا", "err");
+      });
+    }
+
     function sendChat(text) {
       text = (text || "").trim();
       if (!text || chatBusy || !chatReady || !activeChatId) return;
@@ -1372,33 +1476,13 @@
         .catch(function (err) {
           if (chatSettled) return;
           chatSettled = true;
-          hideChatLoading();
           if (chatCancelRequested || (err && err.name === "AbortError")) {
+            hideChatLoading();
             announce(appendBubble("sys", "کار ایجنت لغو شد."));
             setChatStatus(chatReady ? "آماده" : "نیاز به تنظیم API", null);
             return;
           }
-          return chatFetch(chatItemUrl(sentChatId)).then(function (res) {
-            var messages = (res.data && res.data.chat && res.data.chat.messages) || [];
-            var kept = "";
-            if (activeChatId === sentChatId && res.data && res.data.chat) {
-              upsertIndex(res.data.chat);
-              renderThread(messages);
-              renderChatList();
-              chatShownId = sentChatId;
-              kept = threadHasTurn(messages, text);
-            }
-            if (!kept && chatInput && !chatInput.value) chatInput.value = text;
-            if (kept === "assistant") {
-              setChatStatus(chatReady ? "آماده" : "نیاز به تنظیم API", null);
-            } else {
-              announce(appendBubble("err", "ارتباط با سرور برقرار نشد."));
-              setChatStatus("خطا", "err");
-            }
-          }, function () {
-            announce(appendBubble("err", "ارتباط با سرور برقرار نشد."));
-            setChatStatus("خطا", "err");
-          });
+          return recoverDroppedTurn(sentChatId, text);
         })
         .finally(function () {
           chatAbort = null;

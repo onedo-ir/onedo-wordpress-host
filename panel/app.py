@@ -1766,6 +1766,7 @@ def _chat_summary(chat: dict) -> dict:
         "title": chat.get("title") or DEFAULT_CHAT_TITLE,
         "updated_at": chat.get("updated_at") or 0,
         "message_count": len(messages),
+        "running": chat["id"] in _chat_running,
     }
 
 
