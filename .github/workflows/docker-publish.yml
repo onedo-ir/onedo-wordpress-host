@@ -3,7 +3,7 @@
 # Image version tag = sanitized commit subject (not the SHA hex).
 # Tuned for Gitea container registry (rejects buildx attestation / OCI index).
 #
-# Required repository secrets:
+# Required repository secrets (job is skipped — not failed — if either is unset):
 #   REGISTRY_USERNAME  — registry / Gitea user
 #   REGISTRY_PASSWORD  — password or access token with package write
 
@@ -23,6 +23,8 @@ env:
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    # Empty / missing secrets → skip the whole job (success/neutral, no error)
+    if: ${{ secrets.REGISTRY_USERNAME != '' && secrets.REGISTRY_PASSWORD != '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
