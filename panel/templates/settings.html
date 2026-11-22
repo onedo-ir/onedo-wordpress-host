@@ -2,56 +2,70 @@
 {% block title %}تنظیمات پنل — onedo wordpress{% endblock %}
 {% block topbar_title %}تنظیمات پنل{% endblock %}
 {% block body %}
-<p class="muted page-lead">مسیر ابزارها را اینجا تغییر دهید. مقادیر روی volume می‌مانند و با <code class="ltr">docker compose down/up</code> برنمی‌گردند. مدیریت نسخهٔ PHP در <a href="{{ url_for('php') }}">صفحهٔ PHP</a> است.</p>
+<p class="muted page-lead">مسیر ابزارها را اینجا تغییر دهید. مقادیر روی volume می‌مانند و با <code class="ltr">docker compose down/up</code> برنمی‌گردند. نصب وردپرس و مدیریت PHP از کارت‌های همین صفحه در دسترس‌اند.</p>
 
 {% if message %}<div class="alert ok">{{ message }}</div>{% endif %}
 {% if error %}<div class="alert err">{{ error }}</div>{% endif %}
 
 <form method="post" class="settings-form" id="panel-settings-form">
-  <div class="tile settings-tile" style="margin-top:1.25rem">
+  <div class="tile settings-tile">
     <h2>مسیر ابزارها</h2>
     <p>بعد از ذخیره، Apache و FileBrowser به‌روز می‌شوند. برای دسترسی باید وارد پنل باشید (همان گیت قبلی).</p>
 
-    <label for="filebrowser_path">مسیر FileBrowser</label>
-    <input
-      type="text"
-      id="filebrowser_path"
-      name="filebrowser_path"
-      value="{{ settings.filebrowser_path }}"
-      placeholder="{{ defaults.filebrowser_path }}"
-      autocomplete="off"
-      spellcheck="false"
-      required
-    >
-    <p class="field-hint">پیش‌فرض: <code class="ltr">{{ defaults.filebrowser_path }}</code></p>
+    <div class="settings-fields">
+      <div class="settings-field">
+        <label for="filebrowser_path">مسیر FileBrowser</label>
+        <input
+          type="text"
+          id="filebrowser_path"
+          name="filebrowser_path"
+          value="{{ settings.filebrowser_path }}"
+          placeholder="{{ defaults.filebrowser_path }}"
+          autocomplete="off"
+          spellcheck="false"
+          required
+        >
+        <p class="field-hint">پیش‌فرض: <code class="ltr">{{ defaults.filebrowser_path }}</code></p>
+      </div>
 
-    <label for="phpmyadmin_path">مسیر phpMyAdmin</label>
-    <input
-      type="text"
-      id="phpmyadmin_path"
-      name="phpmyadmin_path"
-      value="{{ settings.phpmyadmin_path }}"
-      placeholder="{{ defaults.phpmyadmin_path }}"
-      autocomplete="off"
-      spellcheck="false"
-      required
-    >
-    <p class="field-hint">پیش‌فرض: <code class="ltr">{{ defaults.phpmyadmin_path }}</code></p>
+      <div class="settings-field">
+        <label for="phpmyadmin_path">مسیر phpMyAdmin</label>
+        <input
+          type="text"
+          id="phpmyadmin_path"
+          name="phpmyadmin_path"
+          value="{{ settings.phpmyadmin_path }}"
+          placeholder="{{ defaults.phpmyadmin_path }}"
+          autocomplete="off"
+          spellcheck="false"
+          required
+        >
+        <p class="field-hint">پیش‌فرض: <code class="ltr">{{ defaults.phpmyadmin_path }}</code></p>
+      </div>
+    </div>
 
-    <p class="muted">مثال: <code class="ltr">/fm</code> یا <code class="ltr">/db-admin</code>. مسیرهای <code class="ltr">/panel</code> و هستهٔ وردپرس رزرواند.</p>
-  </div>
+    <p class="muted settings-note">مثال: <code class="ltr">/fm</code> یا <code class="ltr">/db-admin</code>. مسیرهای <code class="ltr">/panel</code> و هستهٔ وردپرس رزرواند.</p>
 
-  <div class="tile settings-tile" style="margin-top:1.25rem">
-    <h2>نسخهٔ PHP</h2>
-    <p>نصب، آپدیت و فعال‌سازی نسخه‌های PHP از صفحهٔ جداگانه انجام می‌شود{% if runtime_php %}؛ الان CLI: <code class="ltr">{{ runtime_php }}</code>{% endif %}{% if settings.php_version %}؛ نسخهٔ فعال پنل: <code class="ltr">{{ settings.php_version }}</code>{% endif %}.</p>
-    <p class="muted"><a href="{{ url_for('php') }}">رفتن به مدیریت PHP</a></p>
-  </div>
-
-  <div class="row-actions" style="margin-top:1.25rem">
-    <button class="btn" type="submit">ذخیره و اعمال</button>
-    <button class="btn secondary" type="button" id="reset-defaults">بازگشت به پیش‌فرض</button>
+    <div class="row-actions">
+      <button class="btn" type="submit">ذخیره و اعمال</button>
+      <button class="btn secondary" type="button" id="reset-defaults">بازگشت به پیش‌فرض</button>
+    </div>
   </div>
 </form>
+
+<div class="grid settings-links" style="margin-top:1.25rem">
+  <div class="tile">
+    <h2>وردپرس</h2>
+    <p>نصب یا آپدیت هستهٔ وردپرس از صفحهٔ جداگانه انجام می‌شود.</p>
+    <a class="btn" href="{{ url_for('wordpress') }}">رفتن به مدیریت وردپرس</a>
+  </div>
+
+  <div class="tile">
+    <h2>نسخهٔ PHP</h2>
+    <p>نصب، آپدیت و فعال‌سازی نسخه‌های PHP از صفحهٔ جداگانه انجام می‌شود{% if runtime_php %}؛ الان CLI: <code class="ltr">{{ runtime_php }}</code>{% endif %}{% if settings.php_version %}؛ نسخهٔ فعال پنل: <code class="ltr">{{ settings.php_version }}</code>{% endif %}.</p>
+    <a class="btn" href="{{ url_for('php') }}">رفتن به مدیریت PHP</a>
+  </div>
+</div>
 {% endblock %}
 {% block scripts %}
 <script>

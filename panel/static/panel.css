@@ -1037,8 +1037,33 @@ code, .ltr {
 }
 
 /* ——— Panel settings ——— */
+.settings-form {
+  margin-top: 1.25rem;
+}
+
 .settings-tile {
-  max-width: 560px;
+  max-width: 720px;
+}
+
+.settings-tile:hover {
+  transform: none;
+  box-shadow: none;
+  border-color: var(--line);
+}
+
+.settings-fields {
+  display: grid;
+  gap: 0.35rem 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  margin-top: 0.85rem;
+}
+
+.settings-field {
+  min-width: 0;
+}
+
+.settings-field label {
+  margin-top: 0.55rem;
 }
 
 .settings-form input[type="text"],
@@ -1051,6 +1076,14 @@ code, .ltr {
 
 .settings-form .custom-select {
   margin-top: 0.15rem;
+}
+
+.settings-note {
+  margin: 1rem 0 0;
+}
+
+.settings-links .tile > h2 + p {
+  margin-bottom: 0;
 }
 
 .field-hint {
