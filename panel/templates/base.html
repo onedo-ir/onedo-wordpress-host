@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="{{ url_for('static', filename='panel.css') }}?v=24">
+  <link rel="stylesheet" href="{{ url_for('static', filename='panel.css') }}?v=25">
 </head>
 <body class="{% if logged_in %}has-sidebar{% endif %}">
   {% if logged_in %}
@@ -31,6 +31,10 @@
         <a href="{{ url_for('wordpress') }}" class="nav-item {% if request.endpoint == 'wordpress' %}active{% endif %}">
           <span class="nav-ico" aria-hidden="true">◆</span>
           <span>وردپرس</span>
+        </a>
+        <a href="{{ url_for('php') }}" class="nav-item {% if request.endpoint == 'php' %}active{% endif %}">
+          <span class="nav-ico" aria-hidden="true">PHP</span>
+          <span>PHP</span>
         </a>
         <a href="{{ url_for('configs') }}" class="nav-item {% if request.endpoint == 'configs' %}active{% endif %}">
           <span class="nav-ico" aria-hidden="true">✎</span>

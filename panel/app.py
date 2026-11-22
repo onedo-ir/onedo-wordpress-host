@@ -92,11 +92,22 @@ _login_lockout_lock = threading.Lock()
 DEFAULT_FILEBROWSER_PATH = "/filebrowser"
 DEFAULT_PHPMYADMIN_PATH = "/phpmyadmin"
 DEFAULT_PHP_VERSION = os.environ.get("DEFAULT_PHP_VERSION", "8.1").strip() or "8.1"
-AVAILABLE_PHP_VERSIONS = tuple(
-    v
-    for v in re.split(r"[\s,]+", os.environ.get("PHP_VERSIONS", "8.1 8.2 8.3 8.4"))
-    if re.fullmatch(r"\d+\.\d+", v)
-) or ("8.1", "8.2", "8.3", "8.4")
+PHP_EXT_SUFFIXES = (
+    "fpm",
+    "cli",
+    "mysql",
+    "curl",
+    "xml",
+    "mbstring",
+    "zip",
+    "gd",
+    "opcache",
+)
+PHP_INSTALL_TIMEOUT = 900
+PHP_VERSIONS_CACHE_TTL = 600
+PHP_FPM_PKG_RE = re.compile(r"^php(\d+\.\d+)-fpm$")
+_apt_lock = threading.Lock()
+_php_versions_cache: dict[str, object] = {"at": 0.0, "items": []}
 PUBLIC_PATH_RE = re.compile(r"^/[A-Za-z0-9](?:[A-Za-z0-9_-]*/?[A-Za-z0-9_-]+)*$")
 RESERVED_PUBLIC_PATHS = {
     "/panel",
@@ -295,21 +306,26 @@ def normalize_php_version(raw: str) -> str:
 
 
 def installed_php_versions() -> list[str]:
-    found = [
-        ver
-        for ver in AVAILABLE_PHP_VERSIONS
-        if Path(f"/usr/sbin/php-fpm{ver}").is_file()
-    ]
+    """Discover installed PHP-FPM binaries on disk (not limited to image allowlist)."""
+    found: list[str] = []
+    sbin = Path("/usr/sbin")
+    if sbin.is_dir():
+        for path in sbin.glob("php-fpm*"):
+            match = re.fullmatch(r"php-fpm(\d+\.\d+)", path.name)
+            if match and path.is_file():
+                found.append(match.group(1))
+    found = sorted(set(found), key=_version_sort_key)
     return found or [DEFAULT_PHP_VERSION]
 
 
 def validate_php_version(version: str) -> str | None:
     if not version:
         return "نسخه PHP را انتخاب کنید."
-    if version not in AVAILABLE_PHP_VERSIONS:
-        return f"نسخه PHP {version} پشتیبانی نمی‌شود."
-    if not Path(f"/usr/sbin/php-fpm{version}").is_file():
-        return f"PHP {version} روی این ایمیج نصب نیست."
+    ver = normalize_php_version(version)
+    if not ver:
+        return f"نسخه PHP {version} نامعتبر است."
+    if not Path(f"/usr/sbin/php-fpm{ver}").is_file():
+        return f"PHP {ver} روی این کانتینر نصب نیست."
     return None
 
 
@@ -530,6 +546,243 @@ def ensure_php_version_applied(
             timeout=60,
         )
     return ver
+
+
+def _apt_env() -> dict[str, str]:
+    return {**os.environ, "DEBIAN_FRONTEND": "noninteractive"}
+
+
+def _apt_get_update(*, timeout: int = 180) -> None:
+    proc = subprocess.run(
+        ["apt-get", "update"],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        env=_apt_env(),
+    )
+    if proc.returncode != 0:
+        err = ((proc.stderr or "") + (proc.stdout or "")).strip()
+        raise RuntimeError(err or "apt-get update ناموفق بود.")
+
+
+def _apt_cache_policy(package: str) -> tuple[str, str]:
+    """Return (installed, candidate) package versions from apt-cache policy."""
+    proc = subprocess.run(
+        ["apt-cache", "policy", package],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=_apt_env(),
+    )
+    text = (proc.stdout or "") + (proc.stderr or "")
+    installed = ""
+    candidate = ""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Installed:"):
+            value = stripped.split(":", 1)[1].strip()
+            if value and value != "(none)":
+                installed = value
+        elif stripped.startswith("Candidate:"):
+            value = stripped.split(":", 1)[1].strip()
+            if value and value != "(none)":
+                candidate = value
+    return installed, candidate
+
+
+def _annotate_php_version_items(
+    raw_items: list[dict[str, str | bool]],
+    active: str,
+) -> list[dict[str, str | bool]]:
+    """Refresh binary/active/status fields from cached apt package metadata."""
+    items: list[dict[str, str | bool]] = []
+    for raw in raw_items:
+        ver = str(raw.get("version") or "")
+        if not ver:
+            continue
+        installed_pkg = str(raw.get("installed_version") or "")
+        candidate_pkg = str(raw.get("candidate_version") or "")
+        has_binary = Path(f"/usr/sbin/php-fpm{ver}").is_file()
+        is_active = has_binary and ver == active
+        pkg_installed = bool(installed_pkg) or has_binary
+        has_update = bool(
+            pkg_installed
+            and candidate_pkg
+            and installed_pkg
+            and candidate_pkg != installed_pkg
+        )
+        if is_active:
+            status = "active"
+        elif has_update:
+            status = "update"
+        elif pkg_installed:
+            status = "installed"
+        else:
+            status = "available"
+        items.append(
+            {
+                "version": ver,
+                "status": status,
+                "installed_version": installed_pkg,
+                "candidate_version": candidate_pkg,
+                "has_binary": has_binary,
+                "is_active": is_active,
+                "is_latest": False,
+            }
+        )
+    if items:
+        items[0]["is_latest"] = True
+    return items
+
+
+def fetch_php_versions(*, force_refresh: bool = False) -> list[dict[str, str | bool]]:
+    """Discover PHP X.Y packages from apt (ondrej/php); cache apt metadata briefly."""
+    active = normalize_php_version(
+        load_panel_settings().get("php_version") or ""
+    ) or DEFAULT_PHP_VERSION
+    cached_items = _php_versions_cache.get("items") or []
+    cached_at = float(_php_versions_cache.get("at") or 0.0)
+    if (
+        not force_refresh
+        and isinstance(cached_items, list)
+        and cached_items
+        and (time.time() - cached_at) < PHP_VERSIONS_CACHE_TTL
+    ):
+        return _annotate_php_version_items(
+            [dict(x) for x in cached_items if isinstance(x, dict)],
+            active,
+        )
+
+    with _apt_lock:
+        # Re-check cache inside the lock (another thread may have refreshed).
+        cached_items = _php_versions_cache.get("items") or []
+        cached_at = float(_php_versions_cache.get("at") or 0.0)
+        if (
+            not force_refresh
+            and isinstance(cached_items, list)
+            and cached_items
+            and (time.time() - cached_at) < PHP_VERSIONS_CACHE_TTL
+        ):
+            return _annotate_php_version_items(
+                [dict(x) for x in cached_items if isinstance(x, dict)],
+                active,
+            )
+
+        _apt_get_update()
+        proc = subprocess.run(
+            ["apt-cache", "search", "--names-only", r"^php[0-9]+\.[0-9]+-fpm$"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env=_apt_env(),
+        )
+        if proc.returncode != 0:
+            err = ((proc.stderr or "") + (proc.stdout or "")).strip()
+            raise RuntimeError(err or "apt-cache search ناموفق بود.")
+        versions: set[str] = set()
+        for line in (proc.stdout or "").splitlines():
+            pkg = line.split(None, 1)[0].strip() if line.strip() else ""
+            match = PHP_FPM_PKG_RE.match(pkg)
+            if match:
+                versions.add(match.group(1))
+        if not versions:
+            # Fallback: scan pkgnames when search yields nothing
+            proc2 = subprocess.run(
+                ["apt-cache", "pkgnames", "php"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=120,
+                env=_apt_env(),
+            )
+            for line in (proc2.stdout or "").splitlines():
+                match = PHP_FPM_PKG_RE.match(line.strip())
+                if match:
+                    versions.add(match.group(1))
+        raw_items: list[dict[str, str | bool]] = []
+        for ver in sorted(versions, key=_version_sort_key, reverse=True):
+            pkg = f"php{ver}-fpm"
+            installed_pkg, candidate_pkg = _apt_cache_policy(pkg)
+            raw_items.append(
+                {
+                    "version": ver,
+                    "installed_version": installed_pkg,
+                    "candidate_version": candidate_pkg,
+                }
+            )
+        _php_versions_cache["items"] = raw_items
+        _php_versions_cache["at"] = time.time()
+
+    return _annotate_php_version_items(raw_items, active)
+
+
+def install_or_update_php(version: str) -> str:
+    """apt-install a PHP X.Y package set, then apply ionCube + performance drop-ins."""
+    ver = normalize_php_version(version)
+    if not ver:
+        raise RuntimeError("نسخه PHP نامعتبر است.")
+    packages = [f"php{ver}-{suffix}" for suffix in PHP_EXT_SUFFIXES]
+    active_before = normalize_php_version(
+        load_panel_settings().get("php_version") or ""
+    ) or DEFAULT_PHP_VERSION
+    with _apt_lock:
+        _apt_get_update(timeout=180)
+        proc = subprocess.run(
+            [
+                "apt-get",
+                "install",
+                "-y",
+                "--no-install-recommends",
+                *packages,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=PHP_INSTALL_TIMEOUT,
+            env=_apt_env(),
+        )
+        if proc.returncode != 0:
+            err = ((proc.stderr or "") + (proc.stdout or "")).strip()
+            raise RuntimeError(err or f"نصب PHP {ver} ناموفق بود.")
+        # Keep Apache on event MPM + FPM; disable mod_php if apt pulled it in
+        subprocess.run(
+            ["a2dismod", f"php{ver}"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        # Prefer current panel PHP for CLI alternatives so configure does not reset it
+        configure = subprocess.run(
+            ["/usr/local/bin/configure-php-versions.sh"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=180,
+            env={
+                **os.environ,
+                "PHP_VERSIONS": ver,
+                "DEFAULT_PHP_VERSION": active_before,
+            },
+        )
+        if configure.returncode != 0:
+            err = ((configure.stderr or "") + (configure.stdout or "")).strip()
+            raise RuntimeError(
+                err or f"پیکربندی PHP {ver} (ionCube/performance) ناموفق بود."
+            )
+        # Force next list view to re-read apt policy for this version
+        _php_versions_cache["at"] = 0.0
+        _php_versions_cache["items"] = []
+    if not Path(f"/usr/sbin/php-fpm{ver}").is_file():
+        raise RuntimeError(f"پس از نصب، باینری php-fpm{ver} پیدا نشد.")
+    if active_before == ver:
+        ensure_php_version_applied(ver, restart_fpm=True)
+        return f"PHP {ver} به‌روز و FPM ری‌استارت شد."
+    detail = ((proc.stdout or "").strip().splitlines() or [""])[-1]
+    return detail or f"PHP {ver} نصب شد."
 
 
 def ensure_tool_paths_applied(
@@ -1304,28 +1557,27 @@ def settings():
     message = None
     err = None
     current = load_panel_settings()
-    php_choices = installed_php_versions()
 
     if request.method == "POST":
         fb = normalize_public_path(request.form.get("filebrowser_path") or "")
         pma = normalize_public_path(request.form.get("phpmyadmin_path") or "")
-        php_ver = normalize_php_version(request.form.get("php_version") or "")
+        # PHP version is managed on /panel/php — preserve the stored value here
+        php_ver = normalize_php_version(
+            current.get("php_version") or ""
+        ) or DEFAULT_PHP_VERSION
         err = validate_public_path(fb, label="FileBrowser") or validate_public_path(
             pma, label="phpMyAdmin"
         )
         if not err and fb.lower() == pma.lower():
             err = "مسیر FileBrowser و phpMyAdmin نباید یکسان باشند."
-        if not err:
-            err = validate_php_version(php_ver)
         if err:
             current = {
                 "filebrowser_path": fb or current["filebrowser_path"],
                 "phpmyadmin_path": pma or current["phpmyadmin_path"],
-                "php_version": php_ver or current["php_version"],
+                "php_version": php_ver,
             }
         else:
             try:
-                previous_php = current.get("php_version") or DEFAULT_PHP_VERSION
                 current = ensure_tool_paths_applied(
                     {
                         "filebrowser_path": fb,
@@ -1335,17 +1587,11 @@ def settings():
                     restart_filebrowser=True,
                     reload_apache=True,
                 )
-                applied_php = ensure_php_version_applied(
-                    php_ver,
-                    restart_fpm=(php_ver != previous_php),
-                )
                 current = load_panel_settings()
                 message = (
                     "تنظیمات ذخیره شد. "
-                    f"FileBrowser: {fb} — phpMyAdmin: {pma} — PHP: {applied_php}"
+                    f"FileBrowser: {fb} — phpMyAdmin: {pma}"
                 )
-                if php_ver != previous_php:
-                    message += " (PHP-FPM ری‌استارت شد)"
             except Exception as exc:  # noqa: BLE001
                 err = f"اعمال تنظیمات ناموفق بود: {exc}"
 
@@ -1355,7 +1601,6 @@ def settings():
                 "settings.html",
                 settings=current,
                 defaults=default_panel_settings(),
-                php_versions=php_choices,
                 runtime_php=runtime_php_version(),
                 message=message,
                 error=err,
@@ -1508,6 +1753,105 @@ def wordpress():
                 versions_error=versions_error,
                 current_version=current,
                 wordpress_present=present,
+                message=message,
+                error=err,
+            )
+        )
+    )
+
+
+@app.route("/panel/php", methods=["GET", "POST"])
+@login_required
+def php():
+    message = None
+    err = None
+    versions: list[dict[str, str | bool]] = []
+    versions_error = None
+    active = normalize_php_version(
+        load_panel_settings().get("php_version") or ""
+    ) or DEFAULT_PHP_VERSION
+    runtime = runtime_php_version()
+
+    try:
+        versions = fetch_php_versions()
+    except (OSError, subprocess.SubprocessError, RuntimeError, TimeoutError) as exc:
+        versions_error = f"دریافت فهرست نسخه‌های PHP از apt ناموفق بود: {exc}"
+    except Exception as exc:  # noqa: BLE001
+        versions_error = f"دریافت فهرست نسخه‌های PHP از apt ناموفق بود: {exc}"
+
+    if request.method == "POST":
+        action = request.form.get("action") or ""
+        version = normalize_php_version(request.form.get("version") or "")
+        allowed = {str(v["version"]) for v in versions} if versions else set()
+        if action == "install":
+            if not version:
+                err = "نسخه PHP را انتخاب کنید."
+            elif versions and version not in allowed:
+                err = "نسخه در فهرست apt این کانتینر نیست."
+            else:
+                try:
+                    detail = install_or_update_php(version)
+                    versions = fetch_php_versions()
+                    active = normalize_php_version(
+                        load_panel_settings().get("php_version") or ""
+                    ) or DEFAULT_PHP_VERSION
+                    runtime = runtime_php_version()
+                    message = f"PHP {version} با موفقیت نصب/آپدیت شد."
+                    if detail:
+                        message += f" ({detail[:200]})"
+                except Exception as exc:  # noqa: BLE001
+                    err = f"نصب/آپدیت PHP ناموفق: {exc}"
+        elif action == "activate":
+            if not version:
+                err = "نسخه PHP را انتخاب کنید."
+            else:
+                # Explicit activate must not silently fall back to another binary
+                err = validate_php_version(version)
+                if not err:
+                    try:
+                        applied = ensure_php_version_applied(
+                            version, restart_fpm=True
+                        )
+                        if applied != version:
+                            err = (
+                                f"فعال‌سازی PHP {version} انجام نشد "
+                                f"(نتیجه: {applied})."
+                            )
+                        else:
+                            active = applied
+                            runtime = runtime_php_version()
+                            if versions:
+                                try:
+                                    versions = fetch_php_versions()
+                                except Exception:  # noqa: BLE001
+                                    pass
+                            message = (
+                                f"PHP {applied} فعال شد و PHP-FPM ری‌استارت شد."
+                            )
+                    except Exception as exc:  # noqa: BLE001
+                        err = f"فعال‌سازی PHP ناموفق: {exc}"
+        else:
+            err = "عملیات نامعتبر."
+
+    installed = [
+        str(v["version"])
+        for v in versions
+        if v.get("has_binary") or v.get("status") in ("active", "installed", "update")
+    ]
+    if not installed:
+        installed = installed_php_versions()
+    else:
+        installed = sorted(set(installed), key=_version_sort_key, reverse=True)
+
+    return set_gate_cookie(
+        app.make_response(
+            render_template(
+                "php.html",
+                versions=versions,
+                versions_error=versions_error,
+                active_version=active,
+                runtime_php=runtime,
+                installed_versions=installed,
                 message=message,
                 error=err,
             )

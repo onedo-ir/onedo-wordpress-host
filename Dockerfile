@@ -51,9 +51,10 @@ RUN set -eux; \
     sed -i 's|^ErrorLog .*|ErrorLog ${APACHE_LOG_DIR}/error.log|' /etc/apache2/apache2.conf
 
 # ===== PHP performance + ionCube for every shipped version =====
-COPY performance/php-performance.ini /tmp/php-performance.ini
-COPY performance/php-opcache.ini /tmp/php-opcache.ini
-COPY performance/php-fpm-pool.conf /tmp/php-fpm-pool.conf
+# Tuning files live under /opt/php-tuning so runtime apt installs can re-apply them
+COPY performance/php-performance.ini /opt/php-tuning/php-performance.ini
+COPY performance/php-opcache.ini /opt/php-tuning/php-opcache.ini
+COPY performance/php-fpm-pool.conf /opt/php-tuning/php-fpm-pool.conf
 COPY performance/php-fpm-start.sh /usr/local/bin/php-fpm-start.sh
 COPY performance/configure-php-versions.sh /usr/local/bin/configure-php-versions.sh
 COPY ioncube /ioncube

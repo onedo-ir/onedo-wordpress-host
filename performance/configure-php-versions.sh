@@ -5,12 +5,21 @@ set -euo pipefail
 VERSIONS="${PHP_VERSIONS:-8.1 8.2 8.3 8.4}"
 DEFAULT_PHP_VERSION="${DEFAULT_PHP_VERSION:-8.1}"
 
+if [ -f /opt/php-tuning/php-performance.ini ]; then
+  PHP_TUNING_DIR=/opt/php-tuning
+elif [ -f /tmp/php-performance.ini ]; then
+  PHP_TUNING_DIR=/tmp
+else
+  PHP_TUNING_DIR=/opt/php-tuning
+fi
+
 zend_api_dir() {
   case "$1" in
     8.1) echo /usr/lib/php/20210902 ;;
     8.2) echo /usr/lib/php/20220829 ;;
     8.3) echo /usr/lib/php/20230831 ;;
     8.4) echo /usr/lib/php/20240924 ;;
+    8.5) echo /usr/lib/php/20250925 ;;
     *) echo "" ;;
   esac
 }
@@ -91,11 +100,17 @@ for ver in ${VERSIONS}; do
   fi
 
   # Drop-ins after ionCube so a bad tune cannot block loader install during build
-  cp /tmp/php-performance.ini "/etc/php/${ver}/fpm/conf.d/99-performance.ini"
-  cp /tmp/php-performance.ini "/etc/php/${ver}/cli/conf.d/99-performance.ini"
-  cp /tmp/php-opcache.ini "/etc/php/${ver}/fpm/conf.d/10-opcache-tune.ini"
-  cp /tmp/php-opcache.ini "/etc/php/${ver}/cli/conf.d/10-opcache-tune.ini"
-  cp /tmp/php-fpm-pool.conf "/etc/php/${ver}/fpm/pool.d/www.conf"
+  if [ ! -f "${PHP_TUNING_DIR}/php-performance.ini" ] \
+    || [ ! -f "${PHP_TUNING_DIR}/php-opcache.ini" ] \
+    || [ ! -f "${PHP_TUNING_DIR}/php-fpm-pool.conf" ]; then
+    echo "WARN: PHP tuning files missing under ${PHP_TUNING_DIR}; skipping drop-ins for ${ver}"
+  else
+    cp "${PHP_TUNING_DIR}/php-performance.ini" "/etc/php/${ver}/fpm/conf.d/99-performance.ini"
+    cp "${PHP_TUNING_DIR}/php-performance.ini" "/etc/php/${ver}/cli/conf.d/99-performance.ini"
+    cp "${PHP_TUNING_DIR}/php-opcache.ini" "/etc/php/${ver}/fpm/conf.d/10-opcache-tune.ini"
+    cp "${PHP_TUNING_DIR}/php-opcache.ini" "/etc/php/${ver}/cli/conf.d/10-opcache-tune.ini"
+    cp "${PHP_TUNING_DIR}/php-fpm-pool.conf" "/etc/php/${ver}/fpm/pool.d/www.conf"
+  fi
 
   find "/etc/php/${ver}" -type f -name '*.ini' -exec chmod 664 {} + 2>/dev/null || true
   find "/etc/php/${ver}" -type d -exec chmod 755 {} + 2>/dev/null || true
