@@ -2,10 +2,17 @@
 {% block title %}تنظیمات پنل — onedo wordpress{% endblock %}
 {% block topbar_title %}تنظیمات پنل{% endblock %}
 {% block body %}
-<p class="muted page-lead">مسیر ابزارها را اینجا تغییر دهید. مقادیر روی volume می‌مانند و با <code class="ltr">docker compose down/up</code> برنمی‌گردند. مدیریت نسخهٔ PHP در <a href="{{ url_for('php') }}">صفحهٔ PHP</a> است.</p>
+{% set status_labels = {
+  'active': 'فعال',
+  'update': 'آپدیت موجود',
+  'installed': 'نصب‌شده',
+  'available': 'قابل نصب'
+} %}
+<p class="muted page-lead">مسیر ابزارها و نسخهٔ PHP را اینجا مدیریت کنید. مقادیر روی volume می‌مانند و با <code class="ltr">docker compose down/up</code> برنمی‌گردند.</p>
 
 {% if message %}<div class="alert ok">{{ message }}</div>{% endif %}
 {% if error %}<div class="alert err">{{ error }}</div>{% endif %}
+{% if versions_error %}<div class="alert err">{{ versions_error }}</div>{% endif %}
 
 <form method="post" class="settings-form" id="panel-settings-form">
   <div class="tile settings-tile" style="margin-top:1.25rem">
@@ -41,17 +48,110 @@
     <p class="muted">مثال: <code class="ltr">/fm</code> یا <code class="ltr">/db-admin</code>. مسیرهای <code class="ltr">/panel</code> و هستهٔ وردپرس رزرواند.</p>
   </div>
 
-  <div class="tile settings-tile" style="margin-top:1.25rem">
-    <h2>نسخهٔ PHP</h2>
-    <p>نصب، آپدیت و فعال‌سازی نسخه‌های PHP از صفحهٔ جداگانه انجام می‌شود{% if runtime_php %}؛ الان CLI: <code class="ltr">{{ runtime_php }}</code>{% endif %}{% if settings.php_version %}؛ نسخهٔ فعال پنل: <code class="ltr">{{ settings.php_version }}</code>{% endif %}.</p>
-    <p class="muted"><a href="{{ url_for('php') }}">رفتن به مدیریت PHP</a></p>
-  </div>
-
   <div class="row-actions" style="margin-top:1.25rem">
     <button class="btn" type="submit">ذخیره و اعمال</button>
     <button class="btn secondary" type="button" id="reset-defaults">بازگشت به پیش‌فرض</button>
   </div>
 </form>
+
+<div id="php" class="grid" style="margin-top:1.75rem">
+  <div class="tile settings-tile">
+    <h2>وضعیت PHP</h2>
+    <p class="wp-current-version">
+      نسخهٔ فعال پنل:
+      <strong class="ltr">{{ active_version }}</strong>
+    </p>
+    {% if runtime_php %}
+    <p class="muted">CLI در حال اجرا: <code class="ltr">{{ runtime_php }}</code></p>
+    {% endif %}
+    <p class="muted">نسخه‌ها از apt (ondrej/php) خوانده می‌شوند. پس از فعال‌سازی، PHP-FPM ری‌استارت می‌شود.</p>
+  </div>
+
+  <div class="tile settings-tile wp-install-tile">
+    <h2>نصب یا آپدیت PHP</h2>
+    <p>نسخه را از فهرست apt انتخاب کنید؛ فقط نسخه‌هایی که بستهٔ کامل دارند نمایش داده می‌شوند.</p>
+    {% if versions %}
+    <form method="post" id="php-install-form">
+      <input type="hidden" name="action" value="install">
+      <label for="install_version">نسخه</label>
+      <div class="custom-select" data-custom-select>
+        <select id="install_version" name="version" required>
+          {% for v in versions %}
+          <option value="{{ v.version }}"
+            {% if active_version and v.version == active_version %}selected
+            {% elif not active_version and v.is_latest %}selected
+            {% endif %}
+          >{{ v.version }} — {{ status_labels.get(v.status, v.status) }}{% if v.is_latest %} · latest{% endif %}</option>
+          {% endfor %}
+        </select>
+        <button type="button" class="cs-trigger" aria-haspopup="listbox" aria-expanded="false">
+          <span class="cs-label">انتخاب نسخه…</span>
+          <span class="cs-caret" aria-hidden="true"></span>
+        </button>
+        <ul class="cs-list" role="listbox"></ul>
+      </div>
+
+      <div class="row-actions">
+        <button class="btn" type="submit" id="php-install-btn"
+          data-busy="در حال نصب/آپدیت…"
+          data-confirm="نصب یا آپدیت این نسخهٔ PHP انجام شود؟ ممکن است چند دقیقه طول بکشد.">
+          نصب / آپدیت
+        </button>
+      </div>
+      <p class="muted">apt-get ممکن است چند دقیقه طول بکشد؛ صفحه را نبندید. بسته‌ها با rebuild ایمیج از بین می‌روند مگر دوباره نصب شوند.</p>
+    </form>
+    {% else %}
+    <p class="alert err" style="margin-top:1rem">فهرست نسخه‌ها از apt در دسترس نیست. اتصال خروجی کانتینر و مخزن ondrej/php را بررسی کنید.</p>
+    {% endif %}
+  </div>
+
+  <div class="tile settings-tile wp-install-tile">
+    <h2>فعال‌سازی PHP</h2>
+    <p>یکی از نسخه‌های نصب‌شده را برای PHP-FPM و CLI فعال کنید.</p>
+    {% if installed_versions %}
+    <form method="post" id="php-activate-form">
+      <input type="hidden" name="action" value="activate">
+      <label for="activate_version">نسخهٔ نصب‌شده</label>
+      <div class="custom-select" data-custom-select>
+        <select id="activate_version" name="version" required>
+          {% for ver in installed_versions %}
+          <option value="{{ ver }}" {% if ver == active_version %}selected{% endif %}>PHP {{ ver }}{% if ver == active_version %} (فعال){% endif %}</option>
+          {% endfor %}
+        </select>
+        <button type="button" class="cs-trigger" aria-haspopup="listbox" aria-expanded="false">
+          <span class="cs-label">PHP {{ active_version }}</span>
+          <span class="cs-caret" aria-hidden="true"></span>
+        </button>
+        <ul class="cs-list" role="listbox"></ul>
+      </div>
+
+      <div class="row-actions">
+        <button class="btn secondary" type="submit" id="php-activate-btn"
+          data-busy="در حال فعال‌سازی…"
+          data-confirm="این نسخهٔ PHP فعال شود؟ PHP-FPM ری‌استارت می‌شود.">
+          فعال کردن
+        </button>
+      </div>
+    </form>
+    {% else %}
+    <p class="muted">هنوز نسخه‌ای نصب نشده است.</p>
+    {% endif %}
+  </div>
+</div>
+
+{% if versions %}
+<details class="wp-version-list">
+  <summary>همهٔ نسخه‌های قابل نصب ({{ versions|length }})</summary>
+  <ul class="wp-versions">
+    {% for v in versions %}
+    <li>
+      <span class="ltr">{{ v.version }}{% if v.is_latest %} · latest{% endif %}</span>
+      <span class="wp-status wp-status-{{ v.status }}">{{ status_labels.get(v.status, v.status) }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+</details>
+{% endif %}
 {% endblock %}
 {% block scripts %}
 <script>
@@ -59,11 +159,29 @@
   var btn = document.getElementById("reset-defaults");
   var fb = document.getElementById("filebrowser_path");
   var pma = document.getElementById("phpmyadmin_path");
-  if (!btn || !fb || !pma) return;
-  btn.addEventListener("click", function () {
-    fb.value = {{ defaults.filebrowser_path|tojson }};
-    pma.value = {{ defaults.phpmyadmin_path|tojson }};
-  });
+  if (btn && fb && pma) {
+    btn.addEventListener("click", function () {
+      fb.value = {{ defaults.filebrowser_path|tojson }};
+      pma.value = {{ defaults.phpmyadmin_path|tojson }};
+    });
+  }
+
+  function wire(formId, btnId) {
+    var form = document.getElementById(formId);
+    var actionBtn = document.getElementById(btnId);
+    if (!form || !actionBtn) return;
+    form.addEventListener("submit", function (e) {
+      var confirmMsg = actionBtn.getAttribute("data-confirm") || "ادامه داده شود؟";
+      if (!window.confirm(confirmMsg)) {
+        e.preventDefault();
+        return;
+      }
+      actionBtn.disabled = true;
+      actionBtn.textContent = actionBtn.getAttribute("data-busy") || "لطفاً صبر کنید…";
+    });
+  }
+  wire("php-install-form", "php-install-btn");
+  wire("php-activate-form", "php-activate-btn");
 })();
 </script>
 {% endblock %}

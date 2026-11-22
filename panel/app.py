@@ -592,6 +592,24 @@ def _apt_cache_policy(package: str) -> tuple[str, str]:
     return installed, candidate
 
 
+def _php_packages_for_version(ver: str) -> tuple[list[str], list[str]]:
+    """Return (installable, missing) package names for the WordPress PHP set.
+
+    Some apt versions (e.g. early php8.6) publish -fpm while extensions like
+    opcache are not in the repo yet — those must not be offered for install.
+    """
+    installable: list[str] = []
+    missing: list[str] = []
+    for suffix in PHP_EXT_SUFFIXES:
+        pkg = f"php{ver}-{suffix}"
+        installed, candidate = _apt_cache_policy(pkg)
+        if installed or candidate:
+            installable.append(pkg)
+        else:
+            missing.append(pkg)
+    return installable, missing
+
+
 def _annotate_php_version_items(
     raw_items: list[dict[str, str | bool]],
     active: str,
@@ -706,6 +724,12 @@ def fetch_php_versions(*, force_refresh: bool = False) -> list[dict[str, str | b
         for ver in sorted(versions, key=_version_sort_key, reverse=True):
             pkg = f"php{ver}-fpm"
             installed_pkg, candidate_pkg = _apt_cache_policy(pkg)
+            has_binary = Path(f"/usr/sbin/php-fpm{ver}").is_file()
+            _installable, missing = _php_packages_for_version(ver)
+            # Skip incomplete remote sets (e.g. php8.6-fpm without php8.6-opcache)
+            # unless this version is already present on disk.
+            if missing and not has_binary and not installed_pkg:
+                continue
             raw_items.append(
                 {
                     "version": ver,
@@ -724,12 +748,20 @@ def install_or_update_php(version: str) -> str:
     ver = normalize_php_version(version)
     if not ver:
         raise RuntimeError("نسخه PHP نامعتبر است.")
-    packages = [f"php{ver}-{suffix}" for suffix in PHP_EXT_SUFFIXES]
     active_before = normalize_php_version(
         load_panel_settings().get("php_version") or ""
     ) or DEFAULT_PHP_VERSION
     with _apt_lock:
         _apt_get_update(timeout=180)
+        packages, missing = _php_packages_for_version(ver)
+        if missing:
+            # Core set incomplete in apt (seen with early php8.6-* packages).
+            raise RuntimeError(
+                f"بسته‌های لازم برای PHP {ver} در apt موجود نیست: "
+                + ", ".join(missing)
+            )
+        if not packages:
+            raise RuntimeError(f"هیچ بسته‌ای برای PHP {ver} در apt پیدا نشد.")
         proc = subprocess.run(
             [
                 "apt-get",
@@ -1556,44 +1588,123 @@ def dashboard():
 def settings():
     message = None
     err = None
+    versions: list[dict[str, str | bool]] = []
+    versions_error = None
     current = load_panel_settings()
+    active = normalize_php_version(
+        current.get("php_version") or ""
+    ) or DEFAULT_PHP_VERSION
+    runtime = runtime_php_version()
+
+    try:
+        versions = fetch_php_versions()
+    except (OSError, subprocess.SubprocessError, RuntimeError, TimeoutError) as exc:
+        versions_error = f"دریافت فهرست نسخه‌های PHP از apt ناموفق بود: {exc}"
+    except Exception as exc:  # noqa: BLE001
+        versions_error = f"دریافت فهرست نسخه‌های PHP از apt ناموفق بود: {exc}"
 
     if request.method == "POST":
-        fb = normalize_public_path(request.form.get("filebrowser_path") or "")
-        pma = normalize_public_path(request.form.get("phpmyadmin_path") or "")
-        # PHP version is managed on /panel/php — preserve the stored value here
-        php_ver = normalize_php_version(
-            current.get("php_version") or ""
-        ) or DEFAULT_PHP_VERSION
-        err = validate_public_path(fb, label="FileBrowser") or validate_public_path(
-            pma, label="phpMyAdmin"
-        )
-        if not err and fb.lower() == pma.lower():
-            err = "مسیر FileBrowser و phpMyAdmin نباید یکسان باشند."
-        if err:
-            current = {
-                "filebrowser_path": fb or current["filebrowser_path"],
-                "phpmyadmin_path": pma or current["phpmyadmin_path"],
-                "php_version": php_ver,
-            }
+        action = (request.form.get("action") or "").strip()
+        if action in ("install", "activate"):
+            version = normalize_php_version(request.form.get("version") or "")
+            allowed = {str(v["version"]) for v in versions} if versions else set()
+            if action == "install":
+                if not version:
+                    err = "نسخه PHP را انتخاب کنید."
+                elif versions and version not in allowed:
+                    err = "نسخه در فهرست apt این کانتینر نیست یا بستهٔ کامل ندارد."
+                else:
+                    try:
+                        detail = install_or_update_php(version)
+                        versions = fetch_php_versions()
+                        current = load_panel_settings()
+                        active = normalize_php_version(
+                            current.get("php_version") or ""
+                        ) or DEFAULT_PHP_VERSION
+                        runtime = runtime_php_version()
+                        message = f"PHP {version} با موفقیت نصب/آپدیت شد."
+                        if detail:
+                            message += f" ({detail[:200]})"
+                    except Exception as exc:  # noqa: BLE001
+                        err = f"نصب/آپدیت PHP ناموفق: {exc}"
+            else:
+                if not version:
+                    err = "نسخه PHP را انتخاب کنید."
+                else:
+                    err = validate_php_version(version)
+                    if not err:
+                        try:
+                            applied = ensure_php_version_applied(
+                                version, restart_fpm=True
+                            )
+                            if applied != version:
+                                err = (
+                                    f"فعال‌سازی PHP {version} انجام نشد "
+                                    f"(نتیجه: {applied})."
+                                )
+                            else:
+                                current = load_panel_settings()
+                                active = applied
+                                runtime = runtime_php_version()
+                                if versions:
+                                    try:
+                                        versions = fetch_php_versions()
+                                    except Exception:  # noqa: BLE001
+                                        pass
+                                message = (
+                                    f"PHP {applied} فعال شد و PHP-FPM ری‌استارت شد."
+                                )
+                        except Exception as exc:  # noqa: BLE001
+                            err = f"فعال‌سازی PHP ناموفق: {exc}"
         else:
-            try:
-                current = ensure_tool_paths_applied(
-                    {
-                        "filebrowser_path": fb,
-                        "phpmyadmin_path": pma,
-                        "php_version": php_ver,
-                    },
-                    restart_filebrowser=True,
-                    reload_apache=True,
-                )
-                current = load_panel_settings()
-                message = (
-                    "تنظیمات ذخیره شد. "
-                    f"FileBrowser: {fb} — phpMyAdmin: {pma}"
-                )
-            except Exception as exc:  # noqa: BLE001
-                err = f"اعمال تنظیمات ناموفق بود: {exc}"
+            fb = normalize_public_path(request.form.get("filebrowser_path") or "")
+            pma = normalize_public_path(request.form.get("phpmyadmin_path") or "")
+            # Preserve active PHP version when only tool paths change
+            php_ver = normalize_php_version(
+                current.get("php_version") or ""
+            ) or DEFAULT_PHP_VERSION
+            err = validate_public_path(fb, label="FileBrowser") or validate_public_path(
+                pma, label="phpMyAdmin"
+            )
+            if not err and fb.lower() == pma.lower():
+                err = "مسیر FileBrowser و phpMyAdmin نباید یکسان باشند."
+            if err:
+                current = {
+                    "filebrowser_path": fb or current["filebrowser_path"],
+                    "phpmyadmin_path": pma or current["phpmyadmin_path"],
+                    "php_version": php_ver,
+                }
+            else:
+                try:
+                    current = ensure_tool_paths_applied(
+                        {
+                            "filebrowser_path": fb,
+                            "phpmyadmin_path": pma,
+                            "php_version": php_ver,
+                        },
+                        restart_filebrowser=True,
+                        reload_apache=True,
+                    )
+                    current = load_panel_settings()
+                    active = normalize_php_version(
+                        current.get("php_version") or ""
+                    ) or DEFAULT_PHP_VERSION
+                    message = (
+                        "تنظیمات ذخیره شد. "
+                        f"FileBrowser: {fb} — phpMyAdmin: {pma}"
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    err = f"اعمال تنظیمات ناموفق بود: {exc}"
+
+    installed = [
+        str(v["version"])
+        for v in versions
+        if v.get("has_binary") or v.get("status") in ("active", "installed", "update")
+    ]
+    if not installed:
+        installed = installed_php_versions()
+    else:
+        installed = sorted(set(installed), key=_version_sort_key, reverse=True)
 
     return set_gate_cookie(
         app.make_response(
@@ -1601,7 +1712,11 @@ def settings():
                 "settings.html",
                 settings=current,
                 defaults=default_panel_settings(),
-                runtime_php=runtime_php_version(),
+                runtime_php=runtime,
+                versions=versions,
+                versions_error=versions_error,
+                active_version=active,
+                installed_versions=installed,
                 message=message,
                 error=err,
             )
@@ -1763,100 +1878,11 @@ def wordpress():
 @app.route("/panel/php", methods=["GET", "POST"])
 @login_required
 def php():
-    message = None
-    err = None
-    versions: list[dict[str, str | bool]] = []
-    versions_error = None
-    active = normalize_php_version(
-        load_panel_settings().get("php_version") or ""
-    ) or DEFAULT_PHP_VERSION
-    runtime = runtime_php_version()
-
-    try:
-        versions = fetch_php_versions()
-    except (OSError, subprocess.SubprocessError, RuntimeError, TimeoutError) as exc:
-        versions_error = f"دریافت فهرست نسخه‌های PHP از apt ناموفق بود: {exc}"
-    except Exception as exc:  # noqa: BLE001
-        versions_error = f"دریافت فهرست نسخه‌های PHP از apt ناموفق بود: {exc}"
-
+    """Legacy URL — PHP is managed under Settings only."""
     if request.method == "POST":
-        action = request.form.get("action") or ""
-        version = normalize_php_version(request.form.get("version") or "")
-        allowed = {str(v["version"]) for v in versions} if versions else set()
-        if action == "install":
-            if not version:
-                err = "نسخه PHP را انتخاب کنید."
-            elif versions and version not in allowed:
-                err = "نسخه در فهرست apt این کانتینر نیست."
-            else:
-                try:
-                    detail = install_or_update_php(version)
-                    versions = fetch_php_versions()
-                    active = normalize_php_version(
-                        load_panel_settings().get("php_version") or ""
-                    ) or DEFAULT_PHP_VERSION
-                    runtime = runtime_php_version()
-                    message = f"PHP {version} با موفقیت نصب/آپدیت شد."
-                    if detail:
-                        message += f" ({detail[:200]})"
-                except Exception as exc:  # noqa: BLE001
-                    err = f"نصب/آپدیت PHP ناموفق: {exc}"
-        elif action == "activate":
-            if not version:
-                err = "نسخه PHP را انتخاب کنید."
-            else:
-                # Explicit activate must not silently fall back to another binary
-                err = validate_php_version(version)
-                if not err:
-                    try:
-                        applied = ensure_php_version_applied(
-                            version, restart_fpm=True
-                        )
-                        if applied != version:
-                            err = (
-                                f"فعال‌سازی PHP {version} انجام نشد "
-                                f"(نتیجه: {applied})."
-                            )
-                        else:
-                            active = applied
-                            runtime = runtime_php_version()
-                            if versions:
-                                try:
-                                    versions = fetch_php_versions()
-                                except Exception:  # noqa: BLE001
-                                    pass
-                            message = (
-                                f"PHP {applied} فعال شد و PHP-FPM ری‌استارت شد."
-                            )
-                    except Exception as exc:  # noqa: BLE001
-                        err = f"فعال‌سازی PHP ناموفق: {exc}"
-        else:
-            err = "عملیات نامعتبر."
-
-    installed = [
-        str(v["version"])
-        for v in versions
-        if v.get("has_binary") or v.get("status") in ("active", "installed", "update")
-    ]
-    if not installed:
-        installed = installed_php_versions()
-    else:
-        installed = sorted(set(installed), key=_version_sort_key, reverse=True)
-
-    return set_gate_cookie(
-        app.make_response(
-            render_template(
-                "php.html",
-                versions=versions,
-                versions_error=versions_error,
-                active_version=active,
-                runtime_php=runtime,
-                installed_versions=installed,
-                message=message,
-                error=err,
-            )
-        )
-    )
+        # Preserve form body for older bookmarks still posting here
+        return redirect(url_for("settings"), code=307)
+    return redirect(url_for("settings") + "#php")
 
 
 def run_shell_command(command: str) -> dict:
